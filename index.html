@@ -1,0 +1,1871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WheresMyTram</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0b0f1a;
+    --surface: #111827;
+    --surface2: #1a2235;
+    --border: rgba(255,255,255,0.07);
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #38bdf8;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --font-ui: 'Space Grotesk', sans-serif;
+    --font-mono: 'DM Mono', monospace;
+  }
+
+  html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font-ui); }
+  /* iOS Safari safe area support */
+  html { height: -webkit-fill-available; }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; min-height: -webkit-fill-available; }
+
+  #topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; height: 52px; flex-shrink: 0;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    z-index: 1000;
+  }
+  #topbar .logo { display: flex; align-items: center; gap: 10px; }
+  #topbar .logo-icon {
+    width: 28px; height: 28px; background: var(--accent);
+    border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600; color: #0b0f1a; flex-shrink: 0;
+  }
+  #topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+  #topbar .subtitle { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+
+  #status-group { display: flex; align-items: center; gap: 12px; }
+  #live-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; font-family: var(--font-mono); color: var(--green);
+  }
+  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.85)} }
+
+  #tram-count-badge {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 3px 10px; border-radius: 20px; color: var(--accent);
+  }
+
+  #clock { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+  /* ── Main content ── */
+  #main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: 260px; flex-shrink: 0;
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  #sidebar-header {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); font-family: var(--font-mono);
+  }
+
+  #route-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+  #route-list::-webkit-scrollbar { width: 4px; }
+  #route-list::-webkit-scrollbar-track { background: transparent; }
+  #route-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .route-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 14px; cursor: pointer; transition: background 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .route-item:hover { background: var(--surface2); }
+  .route-item.active { background: var(--surface2); border-left-color: var(--color); }
+  .route-item.dimmed { opacity: 1; }
+
+  .route-num {
+    width: 32px; height: 20px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; font-family: var(--font-mono);
+    flex-shrink: 0; color: #fff;
+  }
+  .route-name { font-size: 12px; color: var(--text); flex: 1; line-height: 1.3; }
+
+  /* Toggle switch */
+  .route-toggle {
+    flex-shrink: 0; width: 28px; height: 16px; border-radius: 8px;
+    background: var(--muted); position: relative; transition: background 0.2s;
+    cursor: pointer;
+  }
+  .route-toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 12px; height: 12px; border-radius: 50%; background: #fff;
+    transition: transform 0.2s;
+  }
+  .route-item:not(.dimmed) .route-toggle { background: var(--color); }
+  .route-item:not(.dimmed) .route-toggle::after { transform: translateX(12px); }
+  .route-tram-count {
+    font-size: 10px; font-family: var(--font-mono); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 1px 6px; border-radius: 10px; min-width: 24px; text-align: center;
+  }
+
+  #sidebar-footer {
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--muted); font-family: var(--font-mono);
+    line-height: 1.6;
+  }
+
+  /* ── Map ── */
+  #map { flex: 1; }
+
+
+  /* ── Bottom bar (mobile) ── */
+  #bottombar {
+    display: none;
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 6px 10px 8px; gap: 6px; flex-direction: column;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+    z-index: 1000; flex-shrink: 0;
+  }
+  #mobile-controls {
+    display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+  }
+  #mobile-tram-count { margin-left: auto; }
+
+  /* ── Info panel (floating) ── */
+  #info-panel {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 18px;
+    font-size: 13px; z-index: 2000; min-width: 280px; max-width: 380px;
+    max-height: 55vh; overflow-y: auto;
+    display: none; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    backdrop-filter: blur(8px);
+  }
+  #info-panel.visible { display: block; }
+  #notice-overlay {
+    position: fixed; inset: 0; z-index: 3000; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.35);
+  }
+  #notice-overlay.visible { display: flex; }
+  #notice-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 26px; font-size: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-width: 80vw; text-align: center;
+  }
+  #info-close {
+    position: absolute; top: 8px; right: 12px;
+    background: none; border: none; color: var(--muted);
+    font-size: 18px; cursor: pointer; line-height: 1;
+  }
+  .info-row { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+  .info-label { font-size: 10px; font-family: var(--font-mono); color: var(--muted); width: 70px; flex-shrink: 0; }
+  .info-value { font-size: 13px; color: var(--text); }
+  .info-route-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 22px; border-radius: 5px;
+    font-weight: 700; font-size: 13px; font-family: var(--font-mono); color: #fff;
+    margin-right: 6px;
+  }
+
+  /* ── Refresh button ── */
+  #refresh-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--accent); padding: 5px 12px; border-radius: 6px;
+    font-family: var(--font-mono); font-size: 11px; cursor: pointer;
+    transition: background 0.15s; white-space: nowrap;
+  }
+  #refresh-btn:hover { background: rgba(56,189,248,0.1); }
+  #refresh-btn.spinning { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Error banner ── */
+  #error-banner {
+    display: none; padding: 8px 16px; background: rgba(248,113,113,0.15);
+    border-bottom: 1px solid rgba(248,113,113,0.3);
+    font-size: 12px; color: var(--red); font-family: var(--font-mono);
+    text-align: center; z-index: 999;
+  }
+
+  /* ── Leaflet overrides ── */
+  .leaflet-container { background: #0d1220; }
+  /* ── Locate me button ── */
+  #locate-btn {
+    position: absolute; bottom: 24px; right: 12px; z-index: 1000;
+    width: 40px; height: 40px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font-size: 20px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    transition: background 0.15s;
+  }
+  #locate-btn:hover { background: var(--surface2); }
+  #locate-btn.locating { color: var(--accent); animation: pulse-btn 1s infinite; }
+  #locate-btn.located { color: var(--accent); }
+  @keyframes pulse-btn { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  @media (max-width: 640px) {
+    #locate-btn { bottom: 140px; }
+  }
+
+  .leaflet-control-zoom a {
+    background: var(--surface) !important; color: var(--text) !important;
+    border-color: var(--border) !important;
+  }
+  .leaflet-control-attribution {
+    background: rgba(11,15,26,0.7) !important; color: var(--muted) !important;
+    font-size: 9px !important;
+  }
+  .leaflet-control-attribution a { color: var(--muted) !important; }
+
+  .tram-icon-outer {
+    background: none !important; border: none !important; overflow: visible !important;
+    cursor: pointer;
+    filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7));
+    transition: filter 0.15s;
+  }
+  .tram-icon-outer:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
+  /* Red ring marks trams with a fresh, matched GPS reading (broadcasting) */
+  .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 3; }
+  .tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
+  .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
+
+  /* ── Mobile responsive ── */
+  @media (max-width: 640px) {
+    #sidebar { display: none; }
+    #bottombar { display: flex; }
+    #info-panel { top: 60px; bottom: auto; left: 10px; right: 10px; transform: none; min-width: unset; max-width: unset; max-height: 60vh; overflow-y: auto; }
+  }
+
+  /* ── Route group headers ── */
+  .route-group-header {
+    padding: 8px 14px 4px;
+    font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase;
+    color: #DCDCDC; font-family: var(--font-mono);
+    border-top: 1px solid var(--border); margin-top: 4px;
+  }
+  .route-group-header:first-child { border-top: none; margin-top: 0; }
+
+  /* mobile pills */
+  .mobile-pill {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 22px; border-radius: 5px;
+    font-weight: 700; font-size: 11px; font-family: var(--font-mono);
+    color: #fff; cursor: pointer; opacity: 1; transition: opacity 0.2s;
+    border: 2px solid rgba(255,255,255,0.2);
+  }
+  .mobile-pill.dimmed { background: #4a5568 !important; opacity: 0.7; }
+
+  #mobile-tram-count {
+    font-family: var(--font-mono); font-size: 11px; color: var(--accent);
+    margin-left: auto;
+  }
+
+  .sidebar-section { border-bottom: 1px solid var(--border); }
+  .map-type-btn {
+    flex: 1; padding: 6px 0; border-radius: 6px; font-size: 12px;
+    font-family: var(--font-mono); cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--muted); transition: all 0.15s;
+  }
+  .map-type-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  .sidebar-section-label {
+    padding: 10px 14px 6px;
+    font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: #DCDCDC; font-family: var(--font-mono);
+  }
+
+
+  .all-btn {
+    flex: 1; padding: 5px 0; border-radius: 6px; font-size: 11px;
+    font-family: var(--font-mono); cursor: pointer;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    transition: background 0.15s;
+  }
+  .all-btn:hover { background: rgba(255,255,255,0.1); }
+
+  /* ── Compass / orient-north button ── */
+  #compass-btn {
+    position: absolute; bottom: 72px; right: 12px; z-index: 1000;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4); transition: background 0.15s;
+  }
+  #compass-btn:hover { background: var(--surface2); }
+  #compass-rose {
+    font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+    line-height: 1; display: flex; flex-direction: column; align-items: center;
+    transition: transform 0.25s ease;
+  }
+  #compass-rose .tick { color: var(--red); font-size: 8px; margin-bottom: -2px; }
+  @media (max-width: 640px) { #compass-btn { bottom: 188px; } }
+
+  /* ── Service alerts ── */
+  #alerts-btn {
+    background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.45);
+    color: var(--amber); padding: 3px 10px; border-radius: 20px;
+    font-family: var(--font-mono); font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  #alerts-btn:hover { background: rgba(251,191,36,0.28); }
+  #alerts-panel {
+    position: fixed; top: 60px; right: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px; font-size: 13px;
+    z-index: 2000; width: 320px; max-width: calc(100vw - 24px);
+    max-height: 70vh; overflow-y: auto; display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #alerts-panel.visible { display: block; }
+  .info-close-x {
+    position: absolute; top: 8px; right: 12px; background: none; border: none;
+    color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1;
+  }
+  .route-item.has-alert .route-name::after { content: ' ⚠'; color: var(--amber); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div class="logo">
+      <div class="logo-icon">T</div>
+      <div>
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <h1>WheresMyTram</h1>
+          <span class="subtitle">LIVE</span>
+        </div>
+      </div>
+    </div>
+    <div id="status-group">
+      <div id="live-badge" title="Total trams reporting live across the whole Melbourne network — not just the routes you have switched on"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
+      <button id="alerts-btn" style="display:none" title="Service disruptions" onclick="toggleAlertsPanel()">✉ <span id="alerts-count">0</span></button>
+      <div id="tram-count-badge">— trams</div>
+      <div id="clock">--:--:--</div>
+      <button id="refresh-btn" onclick="fetchTrams()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div id="error-banner" id="error-banner"></div>
+
+  <div id="main">
+    <div id="sidebar">
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Map Style</div>
+        <div style="display:flex;gap:6px;padding:0 14px 10px;">
+          <button id="btn-dark" class="map-type-btn active" onclick="setMapStyle('dark')">Dark</button>
+          <button id="btn-light" class="map-type-btn" onclick="setMapStyle('light')">Light</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Routes</div>
+        <div style="display:flex;gap:6px;padding:0 14px 8px;">
+          <button class="all-btn" onclick="setAllRoutes(true)">All On</button>
+          <button class="all-btn" onclick="setAllRoutes(false)">All Off</button>
+        </div>
+        <div style="display:flex;padding:0 14px 8px;">
+          <button class="all-btn" onclick="nearbyStops()">◎ Nearby Stops</button>
+        </div>
+      </div>
+      <div id="route-list"></div>
+      <div id="sidebar-footer">
+        Data: Transport Victoria<br>
+        CC BY 4.0 · Refresh: 10s<br>
+        <span id="last-updated">—</span>
+      </div>
+    </div>
+    <div id="map"></div>
+    <button id="locate-btn" title="Show my location" onclick="locateMe()">◎</button>
+    <button id="compass-btn" title="Orient map north" onclick="orientNorth()"><span id="compass-rose"><span class="tick">▲</span>N</span></button>
+  </div>
+
+  <div id="bottombar">
+    <div id="mobile-controls">
+
+      <div id="mobile-map-btns" style="display:flex;gap:4px;">
+        <button class="mobile-map-btn active" id="mb-dark" onclick="setMapStyle('dark')">Dark</button>
+        <button class="mobile-map-btn" id="mb-light" onclick="setMapStyle('light')">Light</button>
+      </div>
+      <div id="mobile-all-btns">
+        <button class="mobile-all-btn" onclick="setAllRoutes(true)">All On</button>
+        <button class="mobile-all-btn" onclick="setAllRoutes(false)">All Off</button>
+        <button class="mobile-all-btn" onclick="nearbyStops()">Nearby Stops</button>
+      </div>
+      <div id="mobile-tram-count">— trams</div>
+    </div>
+    <div id="mobile-pills"></div>
+  </div>
+</div>
+
+<div id="notice-overlay" onclick="this.classList.remove('visible')">
+  <div id="notice-card"></div>
+</div>
+<div id="info-panel" onclick="closeInfo()">
+  <button id="info-close" onclick="closeInfo()">×</button>
+  <div id="info-content"></div>
+</div>
+
+<div id="alerts-panel" onclick="toggleAlertsPanel()"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+// ── Your Cloudflare Worker URL (fill this in after deploying worker.js) ──
+const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
+
+// ── Route definitions ───────────────────────────────────────────────────────
+const ROUTE_DEFS = {
+  // Official PTV/Yarra Trams route colours
+  '1':   { name: 'East Coburg – South Melbourne Beach', color: '#7DC242', group: 'Swanston' },   // light green
+  '3':   { name: 'Melbourne Uni – East Malvern (Wkdays)', color: '#6AB4E8', group: 'Swanston' }, // light blue
+  '3a':  { name: 'Melbourne Uni – East Malvern (Wknds)', color: '#6AB4E8', group: 'Swanston' },  // light blue
+  '5':   { name: 'Melbourne Uni – Malvern', color: '#D7282F', group: 'Swanston' },               // red
+  '6':   { name: 'Moreland – Glen Iris', color: '#007B5E', group: 'Swanston' },                  // dark green
+  '16':  { name: 'Melbourne Uni – Kew', color: '#E8D44D', group: 'Swanston' },                   // light yellow
+  '64':  { name: 'Melbourne Uni – East Brighton', color: '#009DDC', group: 'Swanston' },         // sky blue
+  '67':  { name: 'Melbourne Uni – Carnegie', color: '#6D4C9F', group: 'Swanston' },              // purple
+  '72':  { name: 'Melbourne Uni – Camberwell', color: '#009B77', group: 'Swanston' },            // teal
+  '19':  { name: 'North Coburg – Flinders St', color: '#BF7EB6', group: 'Elizabeth' },           // light purple
+  '57':  { name: 'West Maribyrnong – Flinders St', color: '#D7282F', group: 'Elizabeth' },       // red
+  '58':  { name: 'West Coburg – Toorak', color: '#6B3A8C', group: 'Elizabeth' },                 // dark purple
+  '59':  { name: 'Airport West – Flinders St', color: '#007B5E', group: 'Elizabeth' },           // dark green
+  '11':  { name: 'West Preston – Victoria Harbour', color: '#6B3A8C', group: 'Collins' },        // dark purple
+  '12':  { name: 'St Kilda / Fitzroy St – Victoria Gardens', color: '#C4006A', group: 'Collins' }, // pink/magenta
+  '48':  { name: 'North Balwyn – Victoria Harbour', color: '#7B9ED9', group: 'Collins' },        // slate blue
+  '109': { name: 'Box Hill – Port Melbourne', color: '#E07B39', group: 'Collins' },              // orange
+  '86':  { name: 'Bundoora RMIT – Waterfront City', color: '#7DC242', group: 'Bourke' },         // light green
+  '96':  { name: 'East Brunswick – St Kilda Beach', color: '#C4006A', group: 'Bourke' },         // pink/magenta
+  '30':  { name: "St Vincent's Plaza – Etihad Stadium", color: '#E07B39', group: 'La Trobe' },  // orange
+  '35':  { name: 'City Circle', color: '#D7282F', group: 'La Trobe' },                               // red
+  '70':  { name: 'Wattle Park – Waterfront City', color: '#F5A800', group: 'Flinders' },         // amber/gold
+  '75':  { name: 'Vermont South – Etihad Stadium', color: '#F5A800', group: 'Flinders' },       // amber/gold (same as 70)
+  '78':  { name: 'North Richmond – Balaclava', color: '#E07B39', group: 'Suburban' },            // orange
+  '82':  { name: 'Moonee Ponds – Footscray', color: '#D7282F', group: 'Suburban' },              // red
+};
+
+const GROUPS = ['Swanston', 'Elizabeth', 'Collins', 'Bourke', 'La Trobe', 'Flinders', 'Suburban'];
+
+// ── Persistent route preferences ─────────────────────────────────────────────
+const STORAGE_KEY = 'melbtrams_active_routes';
+function loadSavedRoutes() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const arr = JSON.parse(saved);
+      return new Set(arr.filter(id => ROUTE_DEFS[id]));
+    }
+  } catch(e) {}
+  return new Set(Object.keys(ROUTE_DEFS));
+}
+function saveRoutes() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...activeRoutes])); } catch(e) {}
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+let tileBase, tileLabels;
+let mapStyle = (() => { try { return localStorage.getItem('melbtrams_map_style') || 'dark'; } catch(e) { return 'dark'; } })();
+
+function setMapStyle(style) {
+  mapStyle = style;
+  try { localStorage.setItem('melbtrams_map_style', style); } catch(e) {}
+  document.getElementById('btn-dark').classList.toggle('active', style === 'dark');
+  document.getElementById('btn-light').classList.toggle('active', style === 'light');
+  // Update mobile buttons
+  document.getElementById('mb-dark')?.classList.toggle('active', style === 'dark');
+  document.getElementById('mb-light')?.classList.toggle('active', style === 'light');
+
+  map.removeLayer(tileBase);
+  map.removeLayer(tileLabels);
+
+  if (style === 'dark') {
+    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+    }).addTo(map);
+  } else {
+    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+    }).addTo(map);
+  }
+  tileLabels.bringToFront();
+}
+let map, markers = {}, routeLayers = {}, activeRoutes = loadSavedRoutes();
+let mapBearing = 0;          // current map rotation (deg), 0 = north up
+let serviceAlerts = [];      // from Worker json.alerts (when available)
+let selectedStop = null;
+let selectedVehicle = null, refreshInterval = null;
+
+// Route geodata loaded from tram_network.json
+let TRAM_NETWORK = null;
+
+// Schedule data loaded from schedule_*.json files
+let SCHEDULE = null;  // merged schedule for today: {stops, trips, shapes}
+let SCHEDULE_DAY = null;  // 'weekday' | 'saturday' | 'sunday'
+
+// Timetable tram state: tramId → {routeId, tripId, lat, lng, bearing, schedPos}
+let scheduleTrams = {};
+let scheduleTimer = null;
+
+// Trip delays from GTFS-RT Trip Updates feed: tripId → delaySecs
+// Positive = running late, negative = running early
+let tripDelays = {};  // populated from Worker response
+// Per-stop delay change-points: tripId → [[stopId, delaySecs], ...]
+// A delay applies from its stop onward until the next change-point (GTFS-RT semantics)
+let tripStopDelays = {};
+let LAST_LIVE_JSON = null;   // most recent worker payload, for re-translation
+let FEED_TO_TRIP = {};       // feed tripId → resolved schedule trip (set per fetch)
+let TRAM_META = {};          // tripKey → { model, gpsDelay, pingAge } from GPS feed
+let GPS_CORR = {};           // tripKey → seconds to add to effective times (G-scaled), ringed trams only
+let DRIFT_HIST = {};         // tripKey → [{delay, t(epoch)}] rolling 3 readings (persists across fetches) — feeds R
+
+// ── Positioning dials (spec §3) ───────────────────────────────
+// The five values that drive the position engine. Read once at boot from the
+// remote config store (control plane) and clamped against DIAL_BOUNDS. If the
+// fetch fails, is missing, or a value is out of range, the baked-in default for
+// that dial stands. The control plane can NEVER take the viewer down.
+//   G     GPS blend gain
+//   RT    drift apply fraction   (the *computed* drift slope keeps the name R)
+//   T     max ping age (seconds)
+//   ORL   off-route limit (metres)
+//   DWELL stop dwell time (seconds; scalar now, per-stop override map later)
+const DIAL_BOUNDS = {
+  G:     { min: -1, max: 2   },
+  RT:    { min: 0,  max: 1   },
+  T:     { min: 0,  max: 900 },
+  ORL:   { min: 20, max: 200 },
+  DWELL: { min: 0,  max: 120 }
+};
+const DEFAULT_DIALS = { G: 0.2, RT: 0.5, T: 420, ORL: 60, DWELL: 20 };
+// Live dials store. Starts on baked defaults; loadConfig() may override at boot.
+window.TUNING = { ...DEFAULT_DIALS };
+
+// Public GET /config on the config Worker.
+// TODO(Drew): swap for the real wmt-config Worker hostname once Cloudflare names
+// it. Until then this fetch simply fails and the viewer runs on baked defaults.
+const CONFIG_URL = 'https://wmt-config.wyliechat.workers.dev/config';
+
+// Fetch remote dials, validate each against DIAL_BOUNDS, override defaults.
+// Any failure (network, timeout, bad JSON, out-of-range, unknown key) is
+// swallowed and the affected dial keeps its baked default. Never blocks boot.
+async function loadConfig() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(CONFIG_URL, { signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(timer);
+    if (!res.ok) return;
+    const cfg = await res.json();
+    const dials = cfg && cfg.dials;
+    if (!dials || typeof dials !== 'object') return;
+    for (const k in DIAL_BOUNDS) {
+      const v = dials[k], b = DIAL_BOUNDS[k];
+      if (typeof v === 'number' && isFinite(v) && v >= b.min && v <= b.max) {
+        window.TUNING[k] = v;   // accept known, in-range value
+      }                          // else keep the baked default for this dial
+    }
+    // Unknown keys in cfg.dials are ignored by construction.
+  } catch (e) { /* swallow — defaults already in place */ }
+}
+
+// Rolling-stock class → boarding accessibility (shown in the tram info panel)
+const TRAM_ACCESS = {
+  'E': 'Low floor accessible',  'E2': 'Low floor accessible',
+  'C1': 'Low floor accessible', 'C2': 'Low floor accessible',
+  'D1': 'Low floor accessible', 'D2': 'Low floor accessible',
+  'A1': 'High floor (steps)',   'A2': 'High floor (steps)',
+  'B1': 'High floor (steps)',   'B2': 'High floor (steps)',
+  'Z3': 'High floor (steps)',   'W':  'High floor heritage (steps)'
+};
+let lastFetchOk = 0;            // Date.now() of last successful Worker fetch
+let lastStopPanelRender = 0;    // nowSecs() of last stop-panel render (for live refresh)
+
+// Victorian public holidays 2026. Trams generally run a Saturday timetable on
+// public holidays, except Good Friday + Christmas Day which run Sunday timetables.
+// (2026-09-25 = AFL Grand Final Friday — verify once AFL confirms the date.)
+const VIC_HOLIDAYS_SUNDAY = new Set(['20260403','20261225']);
+const VIC_HOLIDAYS_SATURDAY = new Set([
+  '20260101','20260126','20260309','20260404','20260406','20260425',
+  '20260608','20260925','20261103','20261226','20261228'
+]);
+
+function getTodayType() {
+  // "Service day": before 4am counts as the previous day, matching GTFS >24h
+  // times (a 1:30am tram belongs to yesterday's timetable as 25:30).
+  const d = new Date(Date.now() - 4*3600*1000);
+  const ds = '' + d.getFullYear() +
+    String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+  if (VIC_HOLIDAYS_SUNDAY.has(ds)) return 'sunday';
+  if (VIC_HOLIDAYS_SATURDAY.has(ds)) return 'saturday';
+  const dow = d.getDay(); // 0=Sun, 6=Sat
+  if (dow === 0) return 'sunday';
+  if (dow === 6) return 'saturday';
+  return 'weekday';
+}
+
+function nowSecs() {
+  // Seconds since *service day* start: between midnight and 4am we are still on
+  // yesterday's timetable, so the clock continues past 86400 (GTFS >24h times)
+  const d = new Date();
+  let s = d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
+  if (d.getHours() < 4) s += 86400;
+  return s;
+}
+
+
+// Find position on a shape geometry at a given distance along the path
+function posOnShape(shape, dist) {
+  if (!shape || shape.length === 0) return null;
+  // Clamp paths must still return a bearing — omitting it produced
+  // rotate(NaN) errors for every tram sitting at a route terminus.
+  if (dist <= shape[0][2]) {
+    const b = shape.length > 1 ? calcBearing(shape[0][0], shape[0][1], shape[1][0], shape[1][1]) : 0;
+    return { lat: shape[0][0], lng: shape[0][1], bearing: b };
+  }
+  if (dist >= shape[shape.length-1][2]) {
+    const p = shape[shape.length-1], q = shape.length > 1 ? shape[shape.length-2] : p;
+    return { lat: p[0], lng: p[1], bearing: shape.length > 1 ? calcBearing(q[0], q[1], p[0], p[1]) : 0 };
+  }
+  // Binary search for segment
+  let lo = 0, hi = shape.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (shape[mid][2] <= dist) lo = mid; else hi = mid;
+  }
+  const p0 = shape[lo], p1 = shape[hi];
+  const segLen = p1[2] - p0[2];
+  const frac = segLen > 0 ? (dist - p0[2]) / segLen : 0;
+  return {
+    lat: p0[0] + (p1[0] - p0[0]) * frac,
+    lng: p0[1] + (p1[1] - p0[1]) * frac,
+    bearing: calcBearing(p0[0], p0[1], p1[0], p1[1])
+  };
+}
+
+// ── Tier 2: GPS as a delay sensor (console-only this build) ──────────────────
+// Each GPS ping carries its own timestamp, so staleness doesn't matter: we ask
+// where the schedule said this trip should have been AT THE PING'S MOMENT and
+// convert the along-shape gap to seconds. Readings older than TUNING.T or
+// further than TUNING.ORL from the shape are discarded (dead transponders
+// hold their last position in this feed — see the 47-minute route 48 ping).
+
+// Inverse shape projection: nearest point on shape → cumulative distance + offset
+function projectOnShape(shape, lat, lng) {
+  if (!shape || shape.length < 2) return null;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat * Math.PI / 180);
+  let bestOff2 = Infinity, bestDist = 0;
+  for (let i = 0; i < shape.length - 1; i++) {
+    const ax = (shape[i][1] - lng) * mLng,   ay = (shape[i][0] - lat) * mLat;
+    const bx = (shape[i+1][1] - lng) * mLng, by = (shape[i+1][0] - lat) * mLat;
+    const dx = bx - ax, dy = by - ay;
+    const L2 = dx*dx + dy*dy;
+    let t = L2 > 0 ? -(ax*dx + ay*dy) / L2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = ax + dx*t, py = ay + dy*t;
+    const off2 = px*px + py*py;
+    if (off2 < bestOff2) {
+      bestOff2 = off2;
+      bestDist = shape[i][2] + (shape[i+1][2] - shape[i][2]) * t;
+    }
+  }
+  return { dist: bestDist, off: Math.sqrt(bestOff2) };
+}
+
+// Scheduled (raw, no delays) service-day seconds at a given shape distance
+function schedSecsAtDist(trip, dist) {
+  const st = trip.stops;
+  if (dist <= st[0][2]) return trip.start + st[0][1];
+  for (let i = 0; i < st.length - 1; i++) {
+    if (dist <= st[i+1][2]) {
+      const d0 = st[i][2], d1 = st[i+1][2];
+      const f = d1 > d0 ? (dist - d0) / (d1 - d0) : 0;
+      return trip.start + st[i][1] + (st[i+1][1] - st[i][1]) * f;
+    }
+  }
+  return trip.start + st[st.length-1][1];
+}
+
+// Inverse of schedSecsAtDist: a scheduled service-day time → shape distance.
+// Used to place the R-projected "position now" debug point back on the route.
+function distAtSchedSecs(trip, sec) {
+  const st = trip.stops;
+  const rel = sec - trip.start;
+  if (rel <= st[0][1]) return st[0][2];
+  for (let i = 0; i < st.length - 1; i++) {
+    if (rel <= st[i+1][1]) {
+      const t0 = st[i][1], t1 = st[i+1][1];
+      const f = t1 > t0 ? (rel - t0) / (t1 - t0) : 0;
+      return st[i][2] + (st[i+1][2] - st[i][2]) * f;
+    }
+  }
+  return st[st.length-1][2];
+}
+
+// Least-squares slope of delay-vs-time over the rolling window → R (sec/sec).
+// Best-fit beats endpoint-difference: one jittery reading gets averaged down
+// instead of dominating. Origin-shifted for numerical stability.
+function driftSlope(pts) {
+  const n = pts.length;
+  if (n < 2) return 0;
+  const t0 = pts[0].t;
+  let st = 0, sd = 0, stt = 0, std = 0;
+  for (const p of pts) {
+    const x = p.t - t0;
+    st += x; sd += p.delay; stt += x*x; std += x*p.delay;
+  }
+  const den = n*stt - st*st;
+  return den !== 0 ? (n*std - st*sd) / den : 0;
+}
+
+// Per fetch: compute observed GPS delays, log vs Trip Updates, harvest tram models.
+function gpsDelaySensor(json) {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const csNow = nowSecs();
+  const meta = {};
+  GPS_CORR = {};   // rebuilt every fetch — same lifecycle as delays
+  // Drop drift history for trips gone quiet > 15 min (dead transponder / finished)
+  const pruneBefore = nowEpoch - 900;
+  for (const dk in DRIFT_HIST) {
+    const h = DRIFT_HIST[dk];
+    if (!h.length || h[h.length-1].t < pruneBefore) delete DRIFT_HIST[dk];
+  }
+  (json.vehicles || []).forEach(v => {
+    const trip = FEED_TO_TRIP[v.tripId];
+    if (!trip) return;
+    const key = tripKey(trip);
+    if (v.vehicleLabel) (meta[key] = meta[key] || {}).model = v.vehicleLabel;
+    if (!v.ts) return;
+    const age = nowEpoch - v.ts;
+    if (age > TUNING.T) return;
+    const dirs = TRAM_NETWORK.routes[trip.routeId];
+    const shape = dirs ? (dirs[String(trip.dir)] || dirs['0']) : null;
+    if (!shape) return;
+    const proj = projectOnShape(shape, v.lat, v.lng);
+    if (!proj || proj.off > TUNING.ORL) return;
+    const pingSecs = csNow - age;   // service-day seconds at the ping's moment
+    const obs = Math.round(pingSecs - schedSecsAtDist(trip, proj.dist));
+    const tu = tripDelays[key];
+    const m = (meta[key] = meta[key] || {});
+    m.gpsDelay = obs; m.pingAge = age;
+    // ── Drift (R): rolling 3-reading window, least-squares slope ──
+    // Dedup on ping timestamp — the 30s feed cache repeats a ping across our
+    // 10s fetches; only genuinely new pings advance the window.
+    const hist = DRIFT_HIST[key] || (DRIFT_HIST[key] = []);
+    if (!hist.length || hist[hist.length-1].t !== v.ts) {
+      hist.push({ delay: obs, t: v.ts });
+      if (hist.length > 3) hist.shift();
+    }
+    let R = 0;
+    if (hist.length >= 2) {
+      const span = hist[hist.length-1].t - hist[0].t;   // freshness/usability guard
+      if (span >= 20 && span <= 600) R = driftSlope(hist);
+    }
+    // ── Position correction (the secret sauce) ──
+    // tuBase = the operator's Trip-Updates delay (our baseline). Distrust GPS
+    // readings that disagree with it absurdly (>20 min = teleport/bad match) —
+    // those revert to pure timetable.
+    // G blends the dot from timetable (0) toward GPS-observed delay (1).
+    // RT then slides the dot a further fraction (TUNING.RT) of the way toward the
+    // full drift-projected "arrow" delay (obs + slope·age) — latency + drift.
+    // TUNING.RT = 0 → G-only (old behaviour); 1 → all the way to the arrow tip.
+    const tuBase = (tu === undefined ? 0 : tu);
+    if (Math.abs(obs - tuBase) <= 1200) {
+      const gCorr = TUNING.G * (obs - tuBase);          // G-only delay offset
+      const arrowDelay = obs + R * age;                 // full latency+drift projection
+      const dotDelay = tuBase + gCorr;                  // where the dot sits on G alone
+      GPS_CORR[key] = gCorr + TUNING.RT * (arrowDelay - dotDelay);
+    }
+  });
+  TRAM_META = meta;   // replaced wholesale each fetch, same lifecycle as delays
+}
+
+// ── Live-delay matching ──────────────────────────────────────────────────────
+// Feed trip ids come from a different static-GTFS generation than the schedule
+// JSONs, so they never match directly. Instead we match by (route, start time),
+// using the worker's tripStarts meta, and key the live-delay maps by a stable
+// composite: route_dir_start. ~8% of route+start pairs have trips in BOTH
+// directions starting the same second; those are disambiguated by the feed's
+// stopIds (Melbourne stops are direction-specific). Still ambiguous → skipped.
+
+function tripKey(trip) {
+  return trip.routeId + '_' + trip.dir + '_' + trip.start;
+}
+
+let SCHED_INDEX = {};   // routeId → Map(startSecs → [trips, unique by dir])
+function buildSchedIndex() {
+  SCHED_INDEX = {};
+  if (!SCHEDULE) return;
+  Object.entries(SCHEDULE.trips).forEach(([routeId, trips]) => {
+    const m = new Map();
+    const seen = new Set();
+    for (const t of trips) {
+      const k = t.dir + '_' + t.start;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      let arr = m.get(t.start);
+      if (!arr) m.set(t.start, arr = []);
+      arr.push(t);
+    }
+    SCHED_INDEX[routeId] = m;
+  });
+}
+
+// json → { delays: {compositeKey→secs}, stopDelays: {compositeKey→changePoints} }
+function translateLiveDelays(json) {
+  const delays = {}, stopDelays = {}, feedToTrip = {};
+  const starts = json.tripStarts || {};
+  if (!SCHEDULE) return { delays, stopDelays, feedToTrip };
+  let matched = 0, ambiguous = 0, unmatched = 0;
+  for (const ftid in starts) {
+    const meta = starts[ftid];
+    const route = meta[0], startSecs = meta[1];
+    const idx = SCHED_INDEX[route];
+    if (!idx) { unmatched++; continue; }
+    // Overnight: feed may report real-clock start while the (yesterday)
+    // schedule uses >24h times — try the +86400 variant as fallback
+    let cands = idx.get(startSecs) || idx.get(startSecs + 86400);
+    if (!cands || !cands.length) { unmatched++; continue; }
+    let chosen = null;
+    if (cands.length === 1) {
+      chosen = cands[0];
+    } else {
+      // Both directions start this second — disambiguate via feed stopIds
+      const cps = json.stopDelays && json.stopDelays[ftid];
+      if (cps && cps.length) {
+        const ids = cps.map(c => String(c[0]));
+        const hits = cands.filter(t => {
+          const set = new Set(t.stops.map(s => String(s[0])));
+          return ids.every(id => set.has(id));
+        });
+        if (hits.length === 1) chosen = hits[0];
+      }
+      if (!chosen) { ambiguous++; continue; }   // conservative: no data beats wrong data
+    }
+    const key = tripKey(chosen);
+    feedToTrip[ftid] = chosen;
+    matched++;
+    if (json.delays && ftid in json.delays) delays[key] = json.delays[ftid];
+    if (json.stopDelays && json.stopDelays[ftid]) stopDelays[key] = json.stopDelays[ftid];
+  }
+  return { delays, stopDelays, feedToTrip };
+}
+
+// Effective per-stop times for a trip: schedule + per-stop GTFS-RT delays.
+// Uses change-points from tripStopDelays (a delay carries forward until the
+// next specified stop). Falls back to the whole-trip delay when per-stop data
+// is absent, and keeps times monotonic (a tram can't arrive before it left).
+function effectiveStopTimes(trip) {
+  const stops = trip.stops;
+  const out = new Array(stops.length);
+  const k = tripKey(trip);
+  const corr = GPS_CORR[k] || 0;   // G-scaled GPS correction (0 unless ringed)
+  const sd = tripStopDelays[k];
+  if (!sd || !sd.length) {
+    const base = (tripDelays[k] || 0) + corr;
+    for (let i = 0; i < stops.length; i++) out[i] = trip.start + stops[i][1] + base;
+    return out;
+  }
+  const change = {};
+  for (const cp of sd) change[String(cp[0])] = cp[1];
+  let cur = sd[0][1]; // stops before the first change-point: use first known delay
+  for (let i = 0; i < stops.length; i++) {
+    const d = change[String(stops[i][0])];
+    if (d !== undefined) cur = d;
+    let t = trip.start + stops[i][1] + cur + corr;
+    if (i > 0 && t < out[i-1] + 1) t = out[i-1] + 1; // monotonic guard
+    out[i] = t;
+  }
+  return out;
+}
+
+// Given a trip and current time, return interpolated {lat, lng, bearing} or null
+// Uses shape geometry for smooth path-following
+// Positions are driven by per-stop effective times (schedule + live delays)
+function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
+  const tripStops = trip.stops; // [stop_id, delta_secs, shape_dist]
+
+  // Effective (delay-adjusted) absolute times for each stop
+  const absTimes = effectiveStopTimes(trip);
+  const tripEnd  = absTimes[absTimes.length - 1];
+
+  // Not active yet or already finished
+  if (currentSecs < absTimes[0] - 120) return null;
+  if (currentSecs > tripEnd + 120) return null;
+
+  // Get shape geometry for this trip (route + direction)
+  const routeDirs = network_routes[trip.routeId];
+  const shape = routeDirs ? (routeDirs[String(trip.dir)] || routeDirs['0']) : null;
+
+  // Find which inter-stop segment we're in
+  let segIdx = -1;
+  for (let i = 0; i < absTimes.length - 1; i++) {
+    if (currentSecs >= absTimes[i] && currentSecs <= absTimes[i+1]) {
+      segIdx = i; break;
+    }
+  }
+
+  // Before first stop
+  if (segIdx === -1 && currentSecs < absTimes[0]) {
+    const d0 = tripStops[0][2];
+    if (shape) {
+      const p = posOnShape(shape, d0);
+      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true };
+    }
+    const s = stops_dict[String(tripStops[0][0])];
+    if (!s) return null;
+    return { lat: s[0], lng: s[1], bearing: 0, atStop: true };
+  }
+
+  // After last stop
+  if (segIdx === -1) {
+    const dLast = tripStops[tripStops.length-1][2];
+    if (shape) {
+      const p = posOnShape(shape, dLast);
+      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true };
+    }
+    const s = stops_dict[String(tripStops[tripStops.length-1][0])];
+    if (!s) return null;
+    return { lat: s[0], lng: s[1], bearing: 0, atStop: true };
+  }
+
+  // Interpolate shape distance between the two stops
+  // Tram dwells at the departure stop for DWELL_SECS, then travels faster to
+  // cover the full distance in the remaining time — more natural than constant speed
+  const DWELL_SECS = TUNING.DWELL;
+  const t0 = absTimes[segIdx], t1 = absTimes[segIdx+1];
+  const segDuration = t1 - t0;
+  const elapsed = currentSecs - t0;
+  const d0 = tripStops[segIdx][2], d1 = tripStops[segIdx+1][2];
+
+  let frac, dwellingAtStop;
+  if (segDuration > DWELL_SECS + 5 && elapsed <= DWELL_SECS) {
+    // Still dwelling at the departure stop
+    frac = 0;
+    dwellingAtStop = true;
+  } else if (segDuration > DWELL_SECS + 5) {
+    // Travelling — compress journey into (segDuration - DWELL_SECS) seconds
+    const travelTime = segDuration - DWELL_SECS;
+    frac = Math.max(0, Math.min(1, (elapsed - DWELL_SECS) / travelTime));
+    dwellingAtStop = false;
+  } else {
+    // Short segment (< 25s) — normal linear interpolation, no room for dwell
+    frac = segDuration > 0 ? Math.max(0, Math.min(1, elapsed / segDuration)) : 0;
+    dwellingAtStop = false;
+  }
+
+  const dist = d0 + (d1 - d0) * frac;
+
+  if (shape) {
+    const p = posOnShape(shape, dist);
+    return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: dwellingAtStop };
+  }
+
+  // Fallback: straight line between stops if no shape
+  const s0 = stops_dict[String(tripStops[segIdx][0])];
+  const s1 = stops_dict[String(tripStops[segIdx+1][0])];
+  if (!s0 || !s1) return null;
+  return {
+    lat: s0[0] + (s1[0] - s0[0]) * frac,
+    lng: s0[1] + (s1[1] - s0[1]) * frac,
+    bearing: calcBearing(s0[0], s0[1], s1[0], s1[1]),
+    atStop: dwellingAtStop
+  };
+}
+
+// Find active trips right now for all routes
+// Deduplicates by (route, direction, start_time) since schedule contains
+// multiple service_id variants (Mon/Tue/Wed etc) for the same physical service
+function getActiveTrips(currentSecs) {
+  if (!SCHEDULE) return [];
+  const active = [];
+
+  Object.entries(SCHEDULE.trips).forEach(([routeId, tripList]) => {
+    const seen = new Set(); // deduplicate within this route
+    tripList.forEach((trip, idx) => {
+      const tripStart = trip.start;
+      const tripEnd   = tripStart + trip.stops[trip.stops.length-1][1];
+      if (currentSecs >= tripStart && currentSecs <= tripEnd + 60) {
+        // Key: direction + start_time uniquely identifies a physical service
+        const key = trip.dir + '_' + trip.start;
+        if (!seen.has(key)) {
+          seen.add(key);
+          active.push({ routeId, trip, idx });
+        }
+      }
+    });
+  });
+  return active;
+}
+
+// ── Map init ─────────────────────────────────────────────────────────────────
+function makeTramSVG(routeId, color, bearing, vehicleId) {
+  // Circle with protruding arrow triangle pointing in direction of travel
+  // SVG is 36x36, everything centred at 18,18
+  // Arrow points UP at 0deg (north), rotates clockwise
+  const r = 11; // circle radius
+  const fs = routeId.length > 2 ? 7 : 9; // font size
+  // Arrow triangle: tip at top, base overlapping circle edge
+  const tipY = -(r + 12);  // sharp tip extends beyond circle
+  const baseY = -(r - 3);  // base sits inside circle edge
+  const baseW = 7.5;        // half-width of base
+  const pts = '0,' + tipY + ' -' + baseW + ',' + baseY + ' ' + baseW + ',' + baseY;
+  const arrowVis = bearing ? '' : 'display:none;';
+  return (
+    '<svg id="vm-' + vehicleId + '" width="36" height="36" viewBox="-18 -18 36 36"' +
+    ' xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible;">' +
+    '<g transform="rotate(' + ((Number.isFinite(bearing) ? bearing : 0) - mapBearing) + ')" style="' + arrowVis + '">' +
+    // Arrow triangle (pointing up = direction of travel)
+    '<polygon points="' + pts + '" fill="white" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round"/>' +
+    '</g>' +
+    // Circle body (not rotated — label stays upright)
+    '<circle cx="0" cy="0" r="' + r + '" fill="' + color + '" stroke="white" stroke-width="1.5"/>' +
+    // Route label
+    '<text x="0" y="0" text-anchor="middle" dominant-baseline="central"' +
+    ' font-family="DM Mono,monospace" font-weight="700" font-size="' + fs + '" fill="white">' +
+    routeId + '</text>' +
+    '</svg>'
+  );
+}
+
+// Calculate bearing between two GPS points (degrees, 0=N, 90=E)
+function calcBearing(lat1, lng1, lat2, lng2) {
+  const toRad = d => d * Math.PI / 180;
+  const dLng = toRad(lng2 - lng1);
+  const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+            Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// Approx distance in metres between two lat/lng (good enough at city scale)
+function metresBetween(lat1, lng1, lat2, lng2) {
+  const R = 6371000, toRad = d => d * Math.PI / 180;
+  const x = toRad(lng2 - lng1) * Math.cos(toRad((lat1 + lat2) / 2));
+  const y = toRad(lat2 - lat1);
+  return Math.sqrt(x*x + y*y) * R;
+}
+
+function applyMarkerRotation(iconEl, degrees) {
+  // Rotate the inner tram-wrap, not the Leaflet positioning element
+  const wrap = iconEl.querySelector('.tram-wrap');
+  if (wrap) {
+    wrap.style.transform = degrees ? 'rotate(' + degrees + 'deg)' : '';
+  }
+}
+function initMap() {
+  map = L.map('map', {
+    center: [-37.814, 144.963],
+    zoom: 13,
+    zoomControl: true,
+    attributionControl: true,
+    rotate: true,          // leaflet-rotate: allow map bearing
+    touchRotate: true,     // two-finger rotate on touch devices
+    rotateControl: false,  // we use our own compass button
+    bearing: 0,
+  });
+
+  // Street mode: dark CartoDB
+  tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap contributors © CARTO',
+    subdomains: 'abcd', maxZoom: 19,
+  }).addTo(map);
+  tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+  }).addTo(map);
+
+  // Apply saved map style (if not default dark)
+  if (mapStyle !== 'dark') setMapStyle(mapStyle);
+
+  // Free tram zone rectangle
+  const ftz = L.rectangle(
+    [[-37.8080, 144.9530], [-37.8230, 144.9760]],
+    { color: '#4ade80', weight: 1.5, fillColor: '#4ade80', fillOpacity: 0.06, dashArray: '4 4' }
+  ).addTo(map);
+  ftz.bindTooltip('Free Tram Zone', { permanent: false, direction: 'center', className: 'ftz-tooltip' });
+
+  // Compass / orient-north support (only if leaflet-rotate loaded)
+  if (typeof map.setBearing === 'function') {
+    map.on('rotate rotateend', updateCompass);
+  } else {
+    const cb = document.getElementById('compass-btn');
+    if (cb) cb.style.display = 'none';
+  }
+
+  loadAndDrawRoutes();
+}
+
+
+
+// ── Geolocation ──────────────────────────────────────────────────────────────
+let locationMarker = null, accuracyCircle = null;
+let userLoc = null;   // {lat, lng} from the last geolocate fix
+
+function locateMe(onFix) {
+  const btn = document.getElementById('locate-btn');
+  if (!navigator.geolocation) {
+    alert('Geolocation is not supported by your browser.');
+    return;
+  }
+  btn.classList.add('locating');
+  btn.classList.remove('located');
+
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const acc = pos.coords.accuracy;
+
+      // Remove previous markers
+      if (locationMarker) map.removeLayer(locationMarker);
+      if (accuracyCircle) map.removeLayer(accuracyCircle);
+
+      // Accuracy circle
+      accuracyCircle = L.circle([lat, lng], {
+        radius: acc,
+        color: '#38bdf8', fillColor: '#38bdf8',
+        fillOpacity: 0.1, weight: 1,
+      }).addTo(map);
+
+      // Blue dot marker
+      locationMarker = L.circleMarker([lat, lng], {
+        radius: 9, color: '#fff', weight: 2.5,
+        fillColor: '#38bdf8', fillOpacity: 1,
+      }).addTo(map).bindTooltip('You are here', { permanent: false });
+
+      // Centre and zoom map
+      map.setView([lat, lng], 16, { animate: true });
+
+      btn.classList.remove('locating');
+      btn.classList.add('located');
+      userLoc = { lat, lng };
+      if (typeof onFix === 'function') onFix();
+    },
+    err => {
+      btn.classList.remove('locating');
+      let msg = 'Could not get your location.';
+      if (err.code === 1) msg = 'Location access denied. Please enable it in your browser settings.';
+      alert(msg);
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+// Show a transient centred notice; tapping anywhere dismisses it
+function showNotice(msg) {
+  const ov = document.getElementById('notice-overlay');
+  document.getElementById('notice-card').textContent = msg;
+  ov.classList.add('visible');
+}
+
+// "Nearby Stops": switch on only routes with a stop within NEARBY_RADIUS_M of
+// the user's location. No fix yet → run the geolocate flow first, then filter.
+// Nothing nearby → tell the user and restore all routes.
+
+function nearbyStops() {
+  if (!userLoc) { locateMe(nearbyStops); return; }
+  if (!TRAM_NETWORK) return;
+  // Radiating search: start at 350m, grow by 50m until >=2 routes appear,
+  // capped at 3km (outer-suburb stops can be 600-800m from any point).
+  const start = 350;
+  let known = [];
+  for (let radius = start; radius <= 3000; radius += 50) {
+    const found = new Set();
+    Object.values(TRAM_NETWORK.stops).forEach(s => {
+      if (metresBetween(userLoc.lat, userLoc.lng, s.lat, s.lng) <= radius) {
+        (s.r || []).forEach(r => found.add(r));
+      }
+    });
+    known = [...found].filter(r => ROUTE_DEFS[r]);
+    if (known.length >= 2) break;   // keep expanding until at least two routes appear
+  }
+  if (!known.length) {
+    setAllRoutes(true);
+    showNotice('Sorry, no trams are nearby');
+    return;
+  }
+  setAllRoutes(false);
+  known.forEach(r => { if (!activeRoutes.has(r)) toggleRoute(r); });
+}
+
+// ── Schedule loading ─────────────────────────────────────────────────────────
+async function loadSchedule() {
+  const dayType = getTodayType();
+  if (SCHEDULE_DAY === dayType && SCHEDULE) return; // already loaded
+
+  SCHEDULE_DAY = dayType;
+  SCHEDULE = { stops: {}, trips: {}, shapes: [] };
+
+  const files = dayType === 'weekday'
+    ? ['schedule_weekday_a1.json','schedule_weekday_a2.json','schedule_weekday_b.json','schedule_weekday_c.json']
+    : dayType === 'saturday' ? ['schedule_saturday.json'] : ['schedule_sunday.json'];
+
+  setStatus('loading', 'Loading timetable...');
+
+  try {
+    const results = await Promise.all(files.map(f => fetch(f).then(r => r.json())));
+    results.forEach(data => {
+      // Merge stops (same across all files)
+      if (Object.keys(SCHEDULE.stops).length === 0) {
+        SCHEDULE.stops = data.stops;
+      }
+      // Merge trips by route
+      Object.entries(data.trips).forEach(([route, trips]) => {
+        if (!SCHEDULE.trips[route]) SCHEDULE.trips[route] = [];
+        SCHEDULE.trips[route].push(...trips);
+      });
+    });
+    // Sort all trips by start time
+    Object.values(SCHEDULE.trips).forEach(trips =>
+      trips.sort((a, b) => a.start - b.start)
+    );
+    // Stamp routeId onto every trip (needed by tripKey everywhere, including
+    // panels that touch trips the animation loop has never ticked)
+    Object.entries(SCHEDULE.trips).forEach(([routeId, trips]) =>
+      trips.forEach(t => { t.routeId = routeId; })
+    );
+    buildSchedIndex();
+    // If live data arrived before the schedule finished loading, match it now
+    if (LAST_LIVE_JSON) {
+      const live = translateLiveDelays(LAST_LIVE_JSON);
+      tripDelays = live.delays;
+      tripStopDelays = live.stopDelays;
+      FEED_TO_TRIP = live.feedToTrip || {};
+      gpsDelaySensor(LAST_LIVE_JSON);
+    }
+    console.log('Schedule loaded:', Object.keys(SCHEDULE.trips).length, 'routes',
+      Object.values(SCHEDULE.trips).reduce((s,t) => s+t.length, 0), 'trips');
+    startScheduleAnimation();
+  } catch(e) {
+    console.warn('Could not load schedule:', e);
+  }
+}
+
+// ── Schedule animation ────────────────────────────────────────────────────────
+function startScheduleAnimation() {
+  if (scheduleTimer) clearInterval(scheduleTimer);
+  tickSchedule();
+  scheduleTimer = setInterval(tickSchedule, 1000);
+}
+
+function tickSchedule() {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+
+  // Handle midnight rollover: if seconds wrap, reload schedule
+  const cs = nowSecs();
+  // Keep compass + arrow compensation in sync with any map rotation
+  if (typeof map.getBearing === 'function') { mapBearing = map.getBearing() || 0; }
+  // Flag stale data: positions keep animating but delays stop updating
+  if (lastFetchOk && Date.now() - lastFetchOk > 60000) setStatus('stale', 'stale data');
+  const active = getActiveTrips(cs);
+
+
+  const seen = new Set();
+
+  active.forEach(({ routeId, trip }) => {
+    if (!activeRoutes.has(routeId)) return;
+    const def = ROUTE_DEFS[routeId];
+    if (!def) return;
+
+    // Attach routeId to trip so interpolateTrip can look up shape
+    trip.routeId = routeId;
+    const pos = interpolateTrip(trip, SCHEDULE.stops, TRAM_NETWORK.routes, cs);
+    if (!pos) return;
+
+    // Use trip.id as the tram identifier for schedule trams
+    const tramId = 'sched_' + trip.id;
+    seen.add(tramId);
+
+    const finalLat = pos.lat;
+    const finalLng = pos.lng;
+    const bearing  = pos.bearing;
+
+    if (scheduleTrams[tramId]) {
+      // Update existing marker
+      try { scheduleTrams[tramId].marker.setLatLng([finalLat, finalLng]); } catch(e) {}
+      // Update bearing
+      const iconEl = scheduleTrams[tramId].marker._icon;
+      if (iconEl) {
+        const gEl = iconEl.querySelector('g');
+        if (gEl) {
+          gEl.setAttribute('transform', 'rotate(' + ((Number.isFinite(bearing) ? bearing : 0) - mapBearing) + ')');
+          gEl.style.display = bearing ? '' : 'none';
+        }
+      }
+      scheduleTrams[tramId].pos = pos;
+      const sdata = scheduleTrams[tramId].data;   // keep panTo target current (was frozen at creation → map jumped to stale spot)
+      if (sdata) { sdata.lat = finalLat; sdata.lng = finalLng; sdata.bearing = bearing; }
+      const ic = scheduleTrams[tramId].marker._icon;
+      if (ic) ic.classList.toggle('gps-broadcasting', !!TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined);
+    } else {
+      // Create new marker
+      const icon = L.divIcon({
+        className: 'tram-icon-outer',
+        html: makeTramSVG(routeId, def.color, bearing, tramId),
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
+      });
+      const marker = L.marker([finalLat, finalLng], { icon, zIndexOffset: 100 });
+      marker.on('click', () => showScheduleInfo(tramId));
+      marker.addTo(map);
+      if (marker._icon && TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined)
+        marker._icon.classList.add('gps-broadcasting');
+      scheduleTrams[tramId] = { marker, routeId, trip, pos,
+        data: { routeId, vehicleLabel: trip.id, tripId: trip.id,
+                lat: finalLat, lng: finalLng, bearing, speed: '—' }
+      };
+    }
+  });
+
+  // Remove trams no longer active
+  Object.keys(scheduleTrams).forEach(id => {
+    if (!seen.has(id)) {
+      scheduleTrams[id].marker.remove();
+      delete scheduleTrams[id];
+    }
+  });
+
+  updateTramCount();
+
+  // Live-refresh the stop arrivals panel so the minutes count down
+  if (selectedStop !== null && cs - lastStopPanelRender >= 15) {
+    showStopInfo(selectedStop);
+  }
+}
+
+
+
+function showScheduleInfo(tramId) {
+  const t = scheduleTrams[tramId];
+  if (!t) return;
+  const def = ROUTE_DEFS[t.routeId] || { color: '#888', name: 'Unknown' };
+  const d = t.data;
+
+  selectedVehicle = tramId;
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
+  document.getElementById('vm-' + tramId)?.classList.add('selected');
+
+  // Find next stop
+  const cs = nowSecs();
+  // Use the same per-stop effective times as positioning so the panel matches the map
+  const effTimes = effectiveStopTimes(t.trip);
+  const nextStopIdx = effTimes.findIndex(tt => tt > cs);
+  let nextStopHtml = '';
+  if (nextStopIdx >= 0) {
+    const ns = t.trip.stops[nextStopIdx];
+    // Use TRAM_NETWORK.stops for full stop names
+    const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
+    const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
+    const arrSecs = effTimes[nextStopIdx];
+    const minsAway = Math.round((arrSecs - cs) / 60);
+    // Convert schedule seconds to HH:MM — schedule is in local Melbourne time
+    const arrSecsLocal = arrSecs % 86400;
+    const arrHH = Math.floor(arrSecsLocal / 3600) % 24;
+    const arrMM = Math.floor((arrSecsLocal % 3600) / 60);
+    const arrStr = String(arrHH).padStart(2,'0') + ':' + String(arrMM).padStart(2,'0');
+    nextStopHtml = stopName
+      ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
+        stopName.n + '</span></div>' +
+        '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" style="font-family:var(--font-mono)">' +
+        arrStr + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')</span></div>'
+      : '';
+  }
+
+  const nameParts = def.name.split(' – ');  // split on em dash
+  const dirLabel = t.trip.dir === 1
+    ? '→ ' + (nameParts[1] || def.name)
+    : '← ' + (nameParts[0] || def.name);
+
+  document.getElementById('info-content').innerHTML =
+    '<div style="display:flex;align-items:center;margin-bottom:12px;">' +
+    '<span class="info-route-badge" style="background:' + def.color + '">' + t.routeId + '</span>' +
+    '<span style="font-size:13px;font-weight:600;">' + def.name + '</span></div>' +
+    (function() {
+      const m = TRAM_META[tripKey(t.trip)];
+      const txt = (m && m.model)
+        ? 'Tram model ' + m.model + (TRAM_ACCESS[m.model] ? ' \u2013 ' + TRAM_ACCESS[m.model] : '')
+        : 'Tram model not available';
+      return '<div style="font-size:13px;color:#fff;margin-bottom:12px;">' + txt + '</div>';
+    })() +
+    '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
+    nextStopHtml +
+    '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>' +
+    (function() {
+      const tk = tripKey(t.trip);
+      const hasData = (tripStopDelays[tk] && tripStopDelays[tk].length) || tripDelays[tk] !== undefined;
+      if (!hasData) return '';
+      // Delay at the next stop specifically (varies along the route)
+      const ds = nextStopIdx >= 0
+        ? effTimes[nextStopIdx] - (t.trip.start + t.trip.stops[nextStopIdx][1])
+        : (tripDelays[tk] || 0);
+      const mins = Math.round(ds / 60);
+      const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
+      const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
+      return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
+    })();
+
+  document.getElementById('info-panel').classList.add('visible');
+  if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) map.panTo([d.lat, d.lng], { animate: true });
+}
+
+// ── Load network data then draw ──────────────────────────────────────────────
+async function loadAndDrawRoutes() {
+  try {
+    const res = await fetch('tram_network.json');
+    TRAM_NETWORK = await res.json();
+    drawRouteLines();
+    drawStopDots();
+    // Load schedule after network is ready
+    await loadSchedule();
+  } catch(e) {
+    console.warn('Could not load tram_network.json:', e);
+  }
+}
+
+function drawRouteLines() {
+  if (!TRAM_NETWORK) return;
+  // New network format: routes[id] = { "0": [[lat,lng,dist],...], "1": [...] }
+  Object.entries(TRAM_NETWORK.routes).forEach(([id, dirs]) => {
+    const def = ROUTE_DEFS[id];
+    if (!def) return;
+
+    const active = activeRoutes.has(id);
+    const lines = [], casings = [];
+
+    // Draw both directions as separate polylines
+    Object.entries(dirs).forEach(([dir, pts]) => {
+      const latLngs = pts.map(p => [p[0], p[1]]);
+      if (latLngs.length === 0) return;
+
+      const casing = L.polyline(latLngs, {
+        color: '#fff', weight: 8, opacity: 0.3,
+        lineJoin: 'round', lineCap: 'round',
+      });
+      const line = L.polyline(latLngs, {
+        color: def.color, weight: 4, opacity: 1,
+        lineJoin: 'round', lineCap: 'round',
+      });
+      line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
+
+      if (active) { casing.addTo(map); line.addTo(map); }
+      lines.push(line); casings.push(casing);
+    });
+
+    routeLayers[id] = { lines, casings, dots: [] };
+  });
+}
+
+// Stop markers keyed by stop ID for per-route visibility
+let stopMarkers = {}; // stopId -> { marker, routes[] }
+
+function drawStopDots() {
+  if (!TRAM_NETWORK) return;
+  // New format: stops is object {stop_id: {n, lat, lng, r:[routes]}}
+  Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
+    const routes = stop.r || [];
+    const marker = L.circleMarker([stop.lat, stop.lng], {
+      radius: 8, color: '#fff', weight: 1.5,
+      fillColor: '#64748b', fillOpacity: 0.9,
+    }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
+    marker.on('click', () => showStopInfo(sid));
+    if (routes.some(r => activeRoutes.has(r))) {
+      marker.addTo(map);
+    }
+    stopMarkers[sid] = { marker, routes };
+  });
+}
+
+function updateStopVisibility() {
+  Object.values(stopMarkers).forEach(({ marker, routes }) => {
+    const shouldShow = routes.some(r => activeRoutes.has(r));
+    if (shouldShow) marker.addTo(map);
+    else map.removeLayer(marker);
+  });
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+function buildSidebar() {
+  const list = document.getElementById('route-list');
+  const pills = document.getElementById('mobile-pills');
+  list.innerHTML = ''; pills.innerHTML = '';
+
+  GROUPS.forEach(group => {
+    const routes = Object.entries(ROUTE_DEFS).filter(([,d]) => d.group === group);
+    if (!routes.length) return;
+
+    const header = document.createElement('div');
+    header.className = 'route-group-header';
+    header.textContent = group;
+    list.appendChild(header);
+
+    routes.forEach(([id, def]) => {
+      const item = document.createElement('div');
+      item.className = 'route-item' + (activeRoutes.has(id) ? '' : ' dimmed');
+      item.id = 'route-item-' + id;
+      item.style.setProperty('--color', def.color);
+      item.innerHTML = `
+        <div class="route-toggle" title="Toggle route ${id}"></div>
+        <div class="route-num" style="background:${def.color}">${id}</div>
+        <div class="route-name">${def.name}</div>
+        <div class="route-tram-count" id="rc-${id}">0</div>
+      `;
+      item.addEventListener('click', () => toggleRoute(id));
+      list.appendChild(item);
+
+      // Mobile pill
+      const pill = document.createElement('div');
+      pill.className = 'mobile-pill' + (activeRoutes.has(id) ? '' : ' dimmed');
+      pill.id = 'pill-' + id;
+      pill.style.background = def.color;
+      pill.textContent = id;
+      pill.addEventListener('click', () => toggleRoute(id));
+      pills.appendChild(pill);
+    });
+  });
+}
+
+function setAllRoutes(on) {
+  Object.keys(ROUTE_DEFS).forEach(id => {
+    if (on !== activeRoutes.has(id)) toggleRoute(id);
+  });
+  saveRoutes();
+}
+
+function toggleRoute(id) {
+  if (activeRoutes.has(id)) activeRoutes.delete(id);
+  else activeRoutes.add(id);
+  saveRoutes();
+
+  const on = activeRoutes.has(id);
+  document.getElementById('route-item-' + id)?.classList.toggle('dimmed', !on);
+  document.getElementById('pill-' + id)?.classList.toggle('dimmed', !on);
+
+  // Show/hide schedule tram markers for this route
+  Object.values(scheduleTrams).forEach(t => {
+    if (t.routeId === id) {
+      if (on) t.marker.addTo(map);
+      else t.marker.remove();
+    }
+  });
+
+  // Show/hide route lines + stop dots
+  if (routeLayers[id]) {
+    const { lines, casings, dots } = routeLayers[id];
+    if (on) {
+      casings.forEach(c => c.addTo(map));
+      lines.forEach(l => l.addTo(map));
+      dots.forEach(d => d.addTo(map));
+    } else {
+      casings.forEach(c => map.removeLayer(c));
+      lines.forEach(l => map.removeLayer(l));
+      dots.forEach(d => map.removeLayer(d));
+    }
+  }
+
+  updateTramCount();
+  updateStopVisibility();
+
+}
+
+// ── Fetch trams from Worker ────────────────────────────────────────────────
+
+async function fetchTrams() {
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = '↻ Loading…';
+  btn.style.opacity = '0.6';
+
+  try {
+    const r = await fetch(WORKER_URL);
+    if (!r.ok) throw new Error('Worker returned HTTP ' + r.status);
+    const json = await r.json();
+    if (json.error) throw new Error(json.error);
+    const vehicles = json.vehicles || [];
+
+    // Store trip delays from Trip Updates feed
+    LAST_LIVE_JSON = json;
+    const live = translateLiveDelays(json);
+    tripDelays = live.delays;
+    tripStopDelays = live.stopDelays;
+    FEED_TO_TRIP = live.feedToTrip || {};
+    gpsDelaySensor(json);
+    lastFetchOk = Date.now();
+    // Store service alerts (present once the Worker exposes them)
+    serviceAlerts = json.alerts || [];
+    renderAlerts();
+    processVehicles(vehicles);
+    setStatus('live', 'live');
+    document.getElementById('error-banner').style.display = 'none';
+
+    const now = new Date();
+    document.getElementById('last-updated').textContent =
+      'Updated ' + now.toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+
+  } catch (err) {
+    console.error('Fetch error:', err);
+    setStatus('error', 'Connection error');
+    const eb = document.getElementById('error-banner');
+    eb.style.display = 'block';
+    eb.textContent = `⚠ Could not fetch live data: ${err.message}. Retrying in 60s…`;
+  } finally {
+    btn.textContent = '↻ Refresh';
+    btn.style.opacity = '1';
+  }
+}
+
+function processVehicles(vehicles) {
+  // Update the vehicle count display
+  const counts = {};
+  Object.values(scheduleTrams).forEach(t => {
+    counts[t.routeId] = (counts[t.routeId] || 0) + 1;
+  });
+  Object.keys(ROUTE_DEFS).forEach(id => {
+    const el = document.getElementById('rc-' + id);
+    if (el) el.textContent = counts[id] || 0;
+  });
+  updateTramCount();
+}
+
+function updateTramCount() {
+  const visible = Object.values(scheduleTrams).filter(t => activeRoutes.has(t.routeId)).length;
+  document.getElementById('tram-count-badge').textContent = visible + ' trams';
+  document.getElementById('mobile-tram-count').textContent = visible + ' trams';
+}
+
+function showInfo(vehicleId) {
+  const m = markers[vehicleId];
+  if (!m) return;
+  const d = m.data;
+  const def = ROUTE_DEFS[d.routeId] || { color: '#888', name: 'Unknown route' };
+
+  selectedVehicle = vehicleId;
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
+  document.getElementById('vm-' + vehicleId)?.classList.add('selected');
+
+  document.getElementById('info-content').innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:12px;">
+      <span class="info-route-badge" style="background:${def.color}">${d.routeId}</span>
+      <span style="font-size:13px;font-weight:600;">${def.name}</span>
+    </div>
+    <div class="info-row"><span class="info-label">Vehicle</span><span class="info-value" style="font-family:var(--font-mono)">${d.vehicleId}</span></div>
+    <div class="info-row"><span class="info-label">Speed</span><span class="info-value" style="font-family:var(--font-mono)">${d.speed} km/h</span></div>
+    <div class="info-row"><span class="info-label">Bearing</span><span class="info-value" style="font-family:var(--font-mono)">${Math.round(d.bearing)}°</span></div>
+    <div class="info-row"><span class="info-label">Position</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}</span></div>
+  `;
+
+  document.getElementById('info-panel').classList.add('visible');
+  if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) map.panTo([d.lat, d.lng], { animate: true });
+}
+
+function closeInfo() {
+  document.getElementById('info-panel').classList.remove('visible');
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
+  selectedVehicle = null;
+  selectedStop = null;
+}
+
+function setStatus(state, text) {
+  const badge = document.getElementById('live-badge');
+  const dot = badge.querySelector('.pulse');
+  const span = document.getElementById('status-text');
+  span.textContent = text;
+  if (state === 'live') { dot.style.background = 'var(--green)'; }
+  else if (state === 'error') { dot.style.background = 'var(--red)'; }
+  else { dot.style.background = 'var(--amber)'; }
+}
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+// ── Orient-north compass ─────────────────────────────────────
+function orientNorth() {
+  if (typeof map.setBearing === 'function') map.setBearing(0);
+}
+function updateCompass() {
+  if (typeof map.getBearing !== 'function') return;
+  mapBearing = map.getBearing() || 0;
+  const rose = document.getElementById('compass-rose');
+  // rotate the rose so the N/arrow keeps pointing at true north on the rotated map
+  if (rose) rose.style.transform = 'rotate(' + (-mapBearing) + 'deg)';
+}
+
+// ── Tap-a-stop: next tram in each direction ────────────────────────
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function showStopInfo(sid) {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+  const stop = TRAM_NETWORK.stops[String(sid)];
+  if (!stop) return;
+  selectedStop = sid;
+  // Deselect any tram
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
+  selectedVehicle = null;
+
+  const cs = nowSecs();
+  const tapLat = stop.lat, tapLng = stop.lng;
+  const baseRoutes = stop.r || [];
+
+  // Melbourne stops are direction-specific (each platform is its own id, often on
+  // opposite sides of the road and numbered separately). Rather than rely on
+  // stop-id pairing, scan every trip of the routes serving this stop and find
+  // where each trip passes CLOSEST to the tapped point. Both directions live in
+  // SCHEDULE.trips[routeId], so this reliably surfaces both ways.
+  const RADIUS_M = 150;
+  const seen = new Set();
+  const arrivals = []; // { routeId, dir, predArr, delay }
+
+  baseRoutes.forEach(routeId => {
+    if (!activeRoutes.has(routeId)) return;     // only routes the user has on
+    const trips = SCHEDULE.trips[routeId] || [];
+    trips.forEach(trip => {
+      // Find the stop in this trip nearest the tapped location
+      let best = null, bestIdx = -1, bestD = Infinity;
+      for (let si = 0; si < trip.stops.length; si++) {
+        const st = trip.stops[si];
+        const sc = SCHEDULE.stops[String(st[0])];
+        if (!sc) continue;
+        const d = metresBetween(tapLat, tapLng, sc[0], sc[1]);
+        if (d < bestD) { bestD = d; best = st; bestIdx = si; }
+      }
+      if (!best || bestD > RADIUS_M) return;
+      const effT = effectiveStopTimes(trip);
+      const predArr = effT[bestIdx];                       // per-stop prediction
+      const delay = predArr - (trip.start + best[1]);      // delay at THIS stop
+      if (predArr < cs - 90 || predArr > cs + 3600) return; // next ~hour only
+      const key = routeId + '_' + trip.dir + '_' + trip.start;
+      if (seen.has(key)) return;
+      seen.add(key);
+      // Destination = the trip's actual final stop (robust, unlike name-order guessing)
+      const lastSt = TRAM_NETWORK.stops[String(trip.stops[trip.stops.length-1][0])];
+      const dest = lastSt && lastSt.n ? lastSt.n.replace(/\s*#\S+$/, '') : null;
+      arrivals.push({ routeId, dir: trip.dir, predArr, delay, dest });
+    });
+  });
+
+  const byDir = {};
+  arrivals.forEach(a => { (byDir[a.dir] = byDir[a.dir] || []).push(a); });
+  Object.values(byDir).forEach(list => list.sort((x,y) => x.predArr - y.predArr));
+
+  let html = '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + escapeHtml(stop.n) + '</div>';
+  // Walk time from the last geolocate fix: straight-line distance × 1.25 street
+  // detour factor, at 80 m/min (~4.8 km/h), rounded up. Omitted with no fix.
+  if (userLoc) {
+    const walkM = metresBetween(userLoc.lat, userLoc.lng, stop.lat, stop.lng);
+    const mins = Math.max(1, Math.ceil((walkM * 1.25) / 80));
+    html += '<div style="font-size:13px;color:#fff;margin-bottom:2px;">Approx ' +
+      mins + ' minute' + (mins === 1 ? '' : 's') + ' walk</div>';
+  }
+  html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
+
+  const dirKeys = Object.keys(byDir).filter(k => byDir[k].length);
+  if (!dirKeys.length) {
+    html += '<div style="font-size:12px;color:var(--muted);">No trams from switched-on routes scheduled here in the next hour.</div>';
+  } else {
+    dirKeys.forEach(dir => {
+      const list = byDir[dir].slice(0, 3);
+      const firstDef = ROUTE_DEFS[list[0].routeId] || { name: '' };
+      const fparts = firstDef.name.split(' – ');
+      const headDest = list[0].dest || ((String(dir) === '1' ? (fparts[1] || fparts[0]) : (fparts[0] || fparts[1])) || '');
+      html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin:8px 0 4px;">→ ' + escapeHtml(headDest) + '</div>';
+      list.forEach(a => {
+        const def = ROUTE_DEFS[a.routeId] || { color:'#888', name:'' };
+        const parts = def.name.split(' – ');
+        const dest = a.dest || ((String(a.dir) === '1' ? (parts[1] || parts[0]) : (parts[0] || parts[1])) || '');
+        const mins = Math.round((a.predArr - cs) / 60);
+        const minsLabel = mins <= 0 ? 'Due' : mins + ' min';
+        const dmin = Math.round(a.delay / 60);
+        const status = dmin > 2 ? dmin + ' late' : dmin < -1 ? Math.abs(dmin) + ' early' : 'on time';
+        const scol = dmin > 2 ? '#f87171' : dmin < -1 ? '#34d399' : '#94a3b8';
+        html += '<div class="info-row" style="align-items:center;margin-bottom:6px;">' +
+          '<span class="info-route-badge" style="background:' + def.color + ';margin-right:8px;">' + a.routeId + '</span>' +
+          '<span style="flex:1;font-size:12px;">' + escapeHtml(dest) + '</span>' +
+          '<span style="font-family:var(--font-mono);font-size:13px;font-weight:600;margin-right:8px;">' + minsLabel + '</span>' +
+          '<span style="font-family:var(--font-mono);font-size:10px;color:' + scol + ';">' + status + '</span>' +
+          '</div>';
+      });
+    });
+    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--font-mono);margin-top:8px;">Estimated from timetable + live delays</div>';
+  }
+
+  document.getElementById('info-content').innerHTML = html;
+  document.getElementById('info-panel').classList.add('visible');
+  lastStopPanelRender = cs;
+}
+
+// ── Service alerts ────────────────────────────────────────────
+function renderAlerts() {
+  const affected = new Set();
+  serviceAlerts.forEach(a => (a.routes || []).forEach(r => affected.add(String(r))));
+  Object.keys(ROUTE_DEFS).forEach(id => {
+    document.getElementById('route-item-' + id)?.classList.toggle('has-alert', affected.has(id));
+  });
+  const btn = document.getElementById('alerts-btn');
+  const countEl = document.getElementById('alerts-count');
+  if (!btn) return;
+  if (serviceAlerts.length) { btn.style.display = ''; if (countEl) countEl.textContent = serviceAlerts.length; }
+  else { btn.style.display = 'none'; document.getElementById('alerts-panel')?.classList.remove('visible'); }
+}
+
+function toggleAlertsPanel() {
+  const p = document.getElementById('alerts-panel');
+  if (!p) return;
+  if (p.classList.contains('visible')) { p.classList.remove('visible'); return; }
+  let html = '<button class="info-close-x" onclick="event.stopPropagation();toggleAlertsPanel()">×</button>' +
+    '<div style="font-weight:600;font-size:14px;margin-bottom:10px;">Service Alerts</div>';
+  if (!serviceAlerts.length) {
+    html += '<div style="font-size:12px;color:var(--muted)">No current disruptions.</div>';
+  } else {
+    serviceAlerts.forEach(a => {
+      const badges = (a.routes || []).map(r => {
+        const def = ROUTE_DEFS[String(r)];
+        return def ? '<span class="info-route-badge" style="background:' + def.color + ';margin-right:4px;">' + r + '</span>' : '';
+      }).join('');
+      html += '<div style="margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:10px;">' +
+        (badges ? '<div style="margin-bottom:4px;">' + badges + '</div>' : '') +
+        '<div style="font-size:12px;font-weight:600;margin-bottom:2px;">' + escapeHtml(a.header || '') + '</div>' +
+        (a.description ? '<div style="font-size:11px;color:var(--muted);line-height:1.4;">' + escapeHtml(a.description) + '</div>' : '') +
+        (a.url ? '<a href="' + encodeURI(a.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:11px;color:var(--accent);">More info →</a>' : '') +
+        '</div>';
+    });
+  }
+  p.innerHTML = html;
+  p.classList.add('visible');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  loadConfig();   // fire-and-forget remote dials; viewer runs on baked defaults until/if it resolves
+  initMap();
+  buildSidebar();
+  fetchTrams();
+  setInterval(updateClock, 1000);
+  setInterval(fetchTrams, 10000);
+  updateClock();
+});
+</script>
+</body>
+</html>
