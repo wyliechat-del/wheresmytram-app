@@ -556,11 +556,12 @@ const DIAL_BOUNDS = {
 const DEFAULT_DIALS = { G: 0.2, RT: 0.5, T: 420, ORL: 60, DWELL: 20 };
 // Live dials store. Starts on baked defaults; loadConfig() may override at boot.
 window.TUNING = { ...DEFAULT_DIALS };
+// Debug surface (type WMT_DEBUG in the console): config provenance + GPS funnel.
+window.WMT_DEBUG = { config: { source: 'baked', note: 'config fetch not completed yet' } };
 
-// Public GET /config on the config Worker.
-// TODO(Drew): swap for the real wmt-config Worker hostname once Cloudflare names
-// it. Until then this fetch simply fails and the viewer runs on baked defaults.
-const CONFIG_URL = 'https://wmt-config.wyliechat.workers.dev/config';
+// Public GET /config on the config Worker (live). The viewer adopts these dials
+// at load; on any failure it runs on the baked defaults above.
+const CONFIG_URL = 'https://white-thunder-216b.wyliechat.workers.dev/config';
 
 // Fetch remote dials, validate each against DIAL_BOUNDS, override defaults.
 // Any failure (network, timeout, bad JSON, out-of-range, unknown key) is
@@ -571,10 +572,10 @@ async function loadConfig() {
     const timer = setTimeout(() => ctrl.abort(), 3000);
     const res = await fetch(CONFIG_URL, { signal: ctrl.signal, cache: 'no-store' });
     clearTimeout(timer);
-    if (!res.ok) return;
+    if (!res.ok) { window.WMT_DEBUG.config = { source: 'baked', note: 'config HTTP ' + res.status }; return; }
     const cfg = await res.json();
     const dials = cfg && cfg.dials;
-    if (!dials || typeof dials !== 'object') return;
+    if (!dials || typeof dials !== 'object') { window.WMT_DEBUG.config = { source: 'baked', note: 'config response missing dials' }; return; }
     for (const k in DIAL_BOUNDS) {
       const v = dials[k], b = DIAL_BOUNDS[k];
       if (typeof v === 'number' && isFinite(v) && v >= b.min && v <= b.max) {
@@ -582,7 +583,8 @@ async function loadConfig() {
       }                          // else keep the baked default for this dial
     }
     // Unknown keys in cfg.dials are ignored by construction.
-  } catch (e) { /* swallow — defaults already in place */ }
+    window.WMT_DEBUG.config = { source: 'remote', v: cfg.v, dials: { ...window.TUNING } };
+  } catch (e) { window.WMT_DEBUG.config = { source: 'baked', note: 'config fetch failed: ' + (e && e.message || e) }; }
 }
 
 // Rolling-stock class → boarding accessibility (shown in the tram info panel)
@@ -747,19 +749,23 @@ function gpsDelaySensor(json) {
     const h = DRIFT_HIST[dk];
     if (!h.length || h[h.length-1].t < pruneBefore) delete DRIFT_HIST[dk];
   }
+  const dbg = { vehicles: (json.vehicles || []).length, matched: 0, fresh: 0, onRoute: 0, corrected: 0 };
   (json.vehicles || []).forEach(v => {
     const trip = FEED_TO_TRIP[v.tripId];
     if (!trip) return;
+    dbg.matched++;
     const key = tripKey(trip);
     if (v.vehicleLabel) (meta[key] = meta[key] || {}).model = v.vehicleLabel;
     if (!v.ts) return;
     const age = nowEpoch - v.ts;
     if (age > TUNING.T) return;
+    dbg.fresh++;
     const dirs = TRAM_NETWORK.routes[trip.routeId];
     const shape = dirs ? (dirs[String(trip.dir)] || dirs['0']) : null;
     if (!shape) return;
     const proj = projectOnShape(shape, v.lat, v.lng);
     if (!proj || proj.off > TUNING.ORL) return;
+    dbg.onRoute++;
     const pingSecs = csNow - age;   // service-day seconds at the ping's moment
     const obs = Math.round(pingSecs - schedSecsAtDist(trip, proj.dist));
     const tu = tripDelays[key];
@@ -792,9 +798,14 @@ function gpsDelaySensor(json) {
       const arrowDelay = obs + R * age;                 // full latency+drift projection
       const dotDelay = tuBase + gCorr;                  // where the dot sits on G alone
       GPS_CORR[key] = gCorr + TUNING.RT * (arrowDelay - dotDelay);
+      dbg.corrected++;
     }
   });
   TRAM_META = meta;   // replaced wholesale each fetch, same lifecycle as delays
+  window.WMT_DEBUG.gps = Object.assign(dbg, {
+    feedDelays: json.delayCount || 0,
+    at: new Date().toLocaleTimeString(),
+  });
 }
 
 // ── Live-delay matching ──────────────────────────────────────────────────────
@@ -1082,6 +1093,15 @@ function initMap() {
     bearing: 0,
   });
 
+  // Tap-priority stacking (bottom to top): location dot < trams < stop dots.
+  // Route lines stay in the default overlay pane (z 400); tram markers live in
+  // Leaflet's marker pane (z 600). Stops render ABOVE trams so an arriving (or
+  // mispositioned) tram can never block the tap target for stop arrivals.
+  map.createPane('locationPane');
+  map.getPane('locationPane').style.zIndex = 450;   // above route lines, below trams
+  map.createPane('stopsPane');
+  map.getPane('stopsPane').style.zIndex = 620;      // above trams (600), below tooltips (650)
+
   // Street mode: dark CartoDB
   tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
     attribution: '© OpenStreetMap contributors © CARTO',
@@ -1139,6 +1159,8 @@ function locateMe(onFix) {
 
       // Accuracy circle
       accuracyCircle = L.circle([lat, lng], {
+        pane: 'locationPane',
+        interactive: false,   // big translucent disc must never eat stop/tram taps
         radius: acc,
         color: '#38bdf8', fillColor: '#38bdf8',
         fillOpacity: 0.1, weight: 1,
@@ -1146,6 +1168,7 @@ function locateMe(onFix) {
 
       // Blue dot marker
       locationMarker = L.circleMarker([lat, lng], {
+        pane: 'locationPane',
         radius: 9, color: '#fff', weight: 2.5,
         fillColor: '#38bdf8', fillOpacity: 1,
       }).addTo(map).bindTooltip('You are here', { permanent: false });
@@ -1434,6 +1457,7 @@ async function loadAndDrawRoutes() {
     drawStopDots();
     // Load schedule after network is ready
     await loadSchedule();
+    mergeScheduleRouteMembership();   // registry r arrays are sparse; schedule is truth
   } catch(e) {
     console.warn('Could not load tram_network.json:', e);
   }
@@ -1481,6 +1505,7 @@ function drawStopDots() {
   Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
     const routes = stop.r || [];
     const marker = L.circleMarker([stop.lat, stop.lng], {
+      pane: 'stopsPane',
       radius: 8, color: '#fff', weight: 1.5,
       fillColor: '#64748b', fillOpacity: 0.9,
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
@@ -1498,6 +1523,30 @@ function updateStopVisibility() {
     if (shouldShow) marker.addTo(map);
     else map.removeLayer(marker);
   });
+}
+
+// Heal sparse route membership in the stop registry. The generated r arrays
+// under-list routes (route 86 lists 28 of its 201 stops; route 19, 12 of 68),
+// which blanked stop dots and arrivals routes along single-route corridors.
+// Schedule trips are ground truth for which routes serve which stops: union
+// them in, re-point the drawn markers, and re-apply visibility.
+function mergeScheduleRouteMembership() {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+  Object.entries(SCHEDULE.trips).forEach(([routeId, trips]) => {
+    const served = new Set();
+    trips.forEach(t => t.stops.forEach(s => served.add(String(s[0]))));
+    served.forEach(sid => {
+      const stop = TRAM_NETWORK.stops[sid];
+      if (!stop) return;
+      if (!stop.r) stop.r = [];
+      if (!stop.r.includes(routeId)) stop.r.push(routeId);
+    });
+  });
+  Object.entries(stopMarkers).forEach(([sid, entry]) => {
+    const stop = TRAM_NETWORK.stops[sid];
+    if (stop && stop.r) entry.routes = stop.r;
+  });
+  updateStopVisibility();
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -1858,7 +1907,7 @@ function toggleAlertsPanel() {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  loadConfig();   // fire-and-forget remote dials; viewer runs on baked defaults until/if it resolves
+  loadConfig().then(() => console.log('[WMT] config:', window.WMT_DEBUG.config));   // fire-and-forget; baked defaults until/if it resolves
   initMap();
   buildSidebar();
   fetchTrams();
