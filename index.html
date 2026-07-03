@@ -43,6 +43,7 @@
     border-radius: 6px; display: flex; align-items: center; justify-content: center;
     font-size: 14px; font-weight: 600; color: #0b0f1a; flex-shrink: 0;
   }
+  #topbar .logo-icon img { width: 72%; height: 72%; object-fit: contain; display: block; }
   #topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
   #topbar .subtitle { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
 
@@ -340,7 +341,7 @@
 <div id="app">
   <div id="topbar">
     <div class="logo">
-      <div class="logo-icon">T</div>
+      <div class="logo-icon"><img src="data:image/png;base64,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" alt=""></div>
       <div>
         <div style="display:flex;align-items:baseline;gap:8px;">
           <h1>WheresMyTram</h1>
@@ -1458,6 +1459,7 @@ async function loadAndDrawRoutes() {
     // Load schedule after network is ready
     await loadSchedule();
     mergeScheduleRouteMembership();   // registry r arrays are sparse; schedule is truth
+    snapStopsToShapes();              // then sit every dot on its route's drawn line
   } catch(e) {
     console.warn('Could not load tram_network.json:', e);
   }
@@ -1547,6 +1549,34 @@ function mergeScheduleRouteMembership() {
     if (stop && stop.r) entry.routes = stop.r;
   });
   updateStopVisibility();
+}
+
+// Snap stop dots onto the drawn route line. Registry coordinates are physical
+// platform positions, often offset 10-30m from the track centreline (median
+// reservations especially), which left dots floating beside the route. Display
+// only: markers move, registry lat/lng stay pristine for all distance logic.
+// Directional platform pairs will now overlap on the line; the stop panel
+// already shows both directions, so nothing is lost.
+function snapStopsToShapes() {
+  if (!TRAM_NETWORK) return;
+  Object.entries(stopMarkers).forEach(([sid, entry]) => {
+    const stop = TRAM_NETWORK.stops[sid];
+    if (!stop || !stop.r || !stop.r.length) return;
+    let best = null;
+    stop.r.forEach(routeId => {
+      const dirs = TRAM_NETWORK.routes[routeId];
+      if (!dirs) return;
+      Object.values(dirs).forEach(shape => {
+        if (!Array.isArray(shape) || shape.length < 2 || !Array.isArray(shape[0])) return;
+        const proj = projectOnShape(shape, stop.lat, stop.lng);
+        if (proj && (!best || proj.off < best.off)) best = { off: proj.off, shape: shape, dist: proj.dist };
+      });
+    });
+    if (best && best.off <= 100) {   // sanity gate: never snap across a suburb
+      const p = posOnShape(best.shape, best.dist);
+      if (p) entry.marker.setLatLng([p.lat, p.lng]);
+    }
+  });
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
