@@ -44,6 +44,16 @@
     font-size: 14px; font-weight: 600; color: #0b0f1a; flex-shrink: 0;
   }
   #topbar .logo-icon img { width: 72%; height: 72%; object-fit: contain; display: block; }
+
+  /* Stop + location dots: plain markers so leaflet-rotate positions them */
+  .stop-dot {
+    width: 16px; height: 16px; border-radius: 50%; box-sizing: border-box;
+    background: rgba(100, 116, 139, 0.9); border: 1.5px solid #fff;
+  }
+  .loc-dot {
+    width: 18px; height: 18px; border-radius: 50%; box-sizing: border-box;
+    background: #38bdf8; border: 2.5px solid #fff;
+  }
   #topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
   #topbar .subtitle { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
 
@@ -1098,10 +1108,13 @@ function initMap() {
   // Route lines stay in the default overlay pane (z 400); tram markers live in
   // Leaflet's marker pane (z 600). Stops render ABOVE trams so an arriving (or
   // mispositioned) tram can never block the tap target for stop arrivals.
-  map.createPane('locationPane');
-  map.getPane('locationPane').style.zIndex = 450;   // above route lines, below trams
-  map.createPane('stopsPane');
-  map.getPane('stopsPane').style.zIndex = 620;      // above trams (600), below tooltips (650)
+  // leaflet-rotate splits the world in two: a CSS-rotated pane (tiles + vector
+  // overlays) and an upright pane (markers, whose positions the plugin math-
+  // rotates per element). Custom panes get neither treatment - they froze the
+  // stop dots in unrotated coordinates whenever the map was rotated. So the
+  // dots are plain divIcon markers in the standard marker pane instead, and
+  // tap-priority stacking is done with zIndexOffset: location 0 < trams 100
+  // < stops 1000.
 
   // Street mode: dark CartoDB
   tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
@@ -1160,18 +1173,16 @@ function locateMe(onFix) {
 
       // Accuracy circle
       accuracyCircle = L.circle([lat, lng], {
-        pane: 'locationPane',
         interactive: false,   // big translucent disc must never eat stop/tram taps
         radius: acc,
         color: '#38bdf8', fillColor: '#38bdf8',
         fillOpacity: 0.1, weight: 1,
       }).addTo(map);
 
-      // Blue dot marker
-      locationMarker = L.circleMarker([lat, lng], {
-        pane: 'locationPane',
-        radius: 9, color: '#fff', weight: 2.5,
-        fillColor: '#38bdf8', fillOpacity: 1,
+      // Blue dot marker. Plain marker so leaflet-rotate keeps it placed
+      // correctly under rotation; default zIndexOffset 0 sits under trams.
+      locationMarker = L.marker([lat, lng], {
+        icon: L.divIcon({ className: 'loc-dot', iconSize: [18, 18] }),
       }).addTo(map).bindTooltip('You are here', { permanent: false });
 
       // Centre and zoom map
@@ -1501,15 +1512,17 @@ function drawRouteLines() {
 // Stop markers keyed by stop ID for per-route visibility
 let stopMarkers = {}; // stopId -> { marker, routes[] }
 
+// Shared divIcon for every stop dot (16px = the old circleMarker radius 8)
+const STOP_DOT_ICON = L.divIcon({ className: 'stop-dot', iconSize: [16, 16] });
+
 function drawStopDots() {
   if (!TRAM_NETWORK) return;
   // New format: stops is object {stop_id: {n, lat, lng, r:[routes]}}
   Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
     const routes = stop.r || [];
-    const marker = L.circleMarker([stop.lat, stop.lng], {
-      pane: 'stopsPane',
-      radius: 8, color: '#fff', weight: 1.5,
-      fillColor: '#64748b', fillOpacity: 0.9,
+    const marker = L.marker([stop.lat, stop.lng], {
+      icon: STOP_DOT_ICON,
+      zIndexOffset: 1000,   // above tram markers (100): the stop always wins the tap
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
     marker.on('click', () => showStopInfo(sid));
     if (routes.some(r => activeRoutes.has(r))) {
