@@ -574,6 +574,16 @@ window.WMT_DEBUG = { config: { source: 'baked', note: 'config fetch not complete
 // at load; on any failure it runs on the baked defaults above.
 const CONFIG_URL = 'https://white-thunder-216b.wyliechat.workers.dev/config';
 
+// P2 output beacons: anonymous interaction counters -> collector POST /beacon.
+// Counters only (Model B), no ids, no coords; server assigns the UTC hour.
+// Fire-and-forget: a beacon failure must never affect the map.
+const BEACON_ENABLED = true;   // kill switch: set false + commit to stop emitting
+const BEACON_URL = 'https://wmt-collector.wyliechat.workers.dev/beacon';
+function wmtBeacon(e, d) {
+  if (!BEACON_ENABLED) return;
+  try { navigator.sendBeacon(BEACON_URL, JSON.stringify({ e: e, d: d === undefined ? '-' : String(d) })); } catch (err) {}
+}
+
 // Fetch remote dials, validate each against DIAL_BOUNDS, override defaults.
 // Any failure (network, timeout, bad JSON, out-of-range, unknown key) is
 // swallowed and the affected dial keeps its baked default. Never blocks boot.
@@ -1163,6 +1173,7 @@ function locateMe(onFix) {
 
   navigator.geolocation.getCurrentPosition(
     pos => {
+      wmtBeacon('geolocate');
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
       const acc = pos.coords.accuracy;
@@ -1358,7 +1369,7 @@ function tickSchedule() {
         iconAnchor: [18, 18],
       });
       const marker = L.marker([finalLat, finalLng], { icon, zIndexOffset: 100 });
-      marker.on('click', () => showScheduleInfo(tramId));
+      marker.on('click', () => { wmtBeacon('tram_tap', routeId); showScheduleInfo(tramId); });
       marker.addTo(map);
       if (marker._icon && TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined)
         marker._icon.classList.add('gps-broadcasting');
@@ -1524,7 +1535,7 @@ function drawStopDots() {
       icon: STOP_DOT_ICON,
       zIndexOffset: 1000,   // above tram markers (100): the stop always wins the tap
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
-    marker.on('click', () => showStopInfo(sid));
+    marker.on('click', () => { wmtBeacon('stop_tap', sid); showStopInfo(sid); });
     if (routes.some(r => activeRoutes.has(r))) {
       marker.addTo(map);
     }
@@ -1618,7 +1629,7 @@ function buildSidebar() {
         <div class="route-name">${def.name}</div>
         <div class="route-tram-count" id="rc-${id}">0</div>
       `;
-      item.addEventListener('click', () => toggleRoute(id));
+      item.addEventListener('click', () => { wmtBeacon('route_toggle', id); toggleRoute(id); });
       list.appendChild(item);
 
       // Mobile pill
@@ -1627,7 +1638,7 @@ function buildSidebar() {
       pill.id = 'pill-' + id;
       pill.style.background = def.color;
       pill.textContent = id;
-      pill.addEventListener('click', () => toggleRoute(id));
+      pill.addEventListener('click', () => { wmtBeacon('route_toggle', id); toggleRoute(id); });
       pills.appendChild(pill);
     });
   });
