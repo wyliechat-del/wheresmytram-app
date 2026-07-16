@@ -570,6 +570,42 @@ window.TUNING = { ...DEFAULT_DIALS };
 // Debug surface (type WMT_DEBUG in the console): config provenance + GPS funnel.
 window.WMT_DEBUG = { config: { source: 'baked', note: 'config fetch not completed yet' } };
 
+// ── PULL: time-scheduled forward nudge for timetable-only trams ─────────────
+// Field-experiment dial (baked for now; control-plane candidate later). Pulls
+// TT dots forward in TIME; the schedule's own local pace converts that into
+// distance, so the visible shift self-scales with traffic (large on fast quiet
+// track, small in the slow city grid). Applies ONLY to trams with no live GPS
+// correction this fetch — ringed trams are already placed by G/RT, and trams
+// whose ring ages out fall back to the PULL-adjusted dot (softer than the old
+// snap to pure TT). Stop/tram info panels are deliberately unaffected: PULL
+// shifts the clock inside interpolateTrip, never the effective times.
+const PULL_UNIT_SECS = 15;   // seconds per PULL unit (so PULL 2 = 30 s)
+
+// Breakpoint tables: [hourOfDay 0-24, pullUnits], LOCAL wall-clock hours.
+// Linear interpolation between points. Set all units to 0 to disable.
+// Day type comes from getTodayType() (service-day convention: before 4am the
+// previous day's table applies — both tables agree at those hours anyway).
+// ── WEEKDAY table ──
+const PULL_WEEKDAY = [[0,2],[6,2],[7,0],[18,0],[19,2],[24,2]];
+// ── WEEKEND + PUBLIC HOLIDAY table (tweak independently by observation) ──
+const PULL_WEEKEND = [[0,2],[6,2],[7,0],[18,0],[19,2],[24,2]];
+
+function pullSecsNow() {
+  const table = getTodayType() === 'weekday' ? PULL_WEEKDAY : PULL_WEEKEND;
+  const d = new Date();
+  const h = d.getHours() + d.getMinutes()/60 + d.getSeconds()/3600;
+  let units = table[table.length - 1][1];
+  for (let i = 0; i < table.length - 1; i++) {
+    const h0 = table[i][0], u0 = table[i][1];
+    const h1 = table[i+1][0], u1 = table[i+1][1];
+    if (h >= h0 && h <= h1) {
+      units = (h1 === h0) ? u1 : u0 + (u1 - u0) * (h - h0) / (h1 - h0);
+      break;
+    }
+  }
+  return units * PULL_UNIT_SECS;
+}
+
 // Public GET /config on the config Worker (live). The viewer adopts these dials
 // at load; on any failure it runs on the baked defaults above.
 const CONFIG_URL = 'https://white-thunder-216b.wyliechat.workers.dev/config';
@@ -933,6 +969,11 @@ function effectiveStopTimes(trip) {
 // Positions are driven by per-stop effective times (schedule + live delays)
 function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   const tripStops = trip.stops; // [stop_id, delta_secs, shape_dist]
+
+  // PULL: timetable-only trams are evaluated pullSecsNow() seconds ahead of
+  // the real clock. Ringed trams (live GPS_CORR entry) are exempt — G/RT owns
+  // them; when a ring ages out the tram lands here and inherits the pull.
+  if (GPS_CORR[tripKey(trip)] === undefined) currentSecs += pullSecsNow();
 
   // Effective (delay-adjusted) absolute times for each stop
   const absTimes = effectiveStopTimes(trip);
