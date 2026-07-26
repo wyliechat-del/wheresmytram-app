@@ -663,13 +663,15 @@ async function ptvLookup(trip, nextStopId, schedSecs) {
     data = await r.json();
   } catch (e) { return { error: 'fetch' }; }
   const table = (data && data.table) || [];
-  let best = null;
+  let best = null, nearest = null, routeCount = 0;
   for (const d of table) {
     if (d.route_id !== rid || !d.scheduled_local) continue;
+    routeCount++;
     const delta = Math.abs(ptvHmsToServiceSecs(d.scheduled_local) - schedSecs);
+    if (nearest === null || delta < nearest) nearest = delta;
     if (delta <= 90 && (!best || delta < best.delta)) best = { d, delta };
   }
-  if (!best) return { matched: false };
+  if (!best) return { matched: false, routeCount: routeCount, nearest: nearest };
   const d = best.d;
   const horizon = ptvHmsToServiceSecs(d.scheduled_local) - nowSecs(); // secs until departure
   const hasVeh = !!(d.vehicle && d.vehicle.id);
@@ -708,8 +710,12 @@ async function ptvEnrich(tramId, trip, nextStopIdx) {
   const res = await ptvLookup(trip, String(trip.stops[nextStopIdx][0]),
                               trip.start + trip.stops[nextStopIdx][1]);
   if (!res || res.error) { setLine('unavailable', '#94a3b8'); return; }
-  if (!res.matched) { setLine('no matching run', '#94a3b8'); ring(false); return; }
-  if (res.vehicle) {
+if (!res.matched) {
+    const why = res.routeCount
+      ? 'no match \u00b7 nearest ' + Math.round(res.nearest) + 's off'
+      : 'no ' + trip.routeId + ' run at this stop';
+    setLine(why, '#94a3b8'); ring(false); return;
+  }  if (res.vehicle) {
     ring(false);
     const acc = res.vehicle.low_floor ? 'low-floor' : 'high-floor';
     const air = res.vehicle.air_conditioned ? ', a/c' : '';
@@ -1600,8 +1606,7 @@ function showScheduleInfo(tramId) {
     })() +
     '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
     nextStopHtml +
-    '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>' +
-    (function() {
+'<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">' + ((TRAM_META[tripKey(t.trip)] && TRAM_META[tripKey(t.trip)].pingAge !== undefined) ? 'GPS Corrected' : 'Timetable') + '</span></div>' +    (function() {
       const tk = tripKey(t.trip);
       const hasData = (tripStopDelays[tk] && tripStopDelays[tk].length) || tripDelays[tk] !== undefined;
       if (!hasData) return '';
