@@ -725,8 +725,18 @@ if (!res.matched) {
       : ' \u00b7 on time';
     setLine('Tram ' + res.vehicle.id + ' (' + acc + air + ')' + del + ' \u2014 confirmed', '#34d399');
   } else if (res.isGhost) {
-    ring(true);
-    setLine('no vehicle assigned \u2014 possible ghost', '#00e5ff');
+    // A red-ringed tram is broadcasting GPS — already proven real. PTV having no
+    // vehicle on the matched run then means a feed gap or a wrong-twin match, NOT
+    // a ghost: never cyan it or call it one. GPS is the stronger evidence.
+    const gmk = scheduleTrams[tramId];
+    const gicon = gmk && gmk.marker && gmk.marker._icon;
+    if (gicon && gicon.classList.contains('gps-broadcasting')) {
+      ring(false);
+      setLine('GPS live \u00b7 no TramTracker vehicle', '#94a3b8');
+    } else {
+      ring(true);
+      setLine('no vehicle assigned \u2014 possible ghost', '#00e5ff');
+    }
   } else {
     ring(false);
     setLine('scheduled, awaiting vehicle', '#94a3b8');
