@@ -249,7 +249,10 @@
   .tram-icon-outer:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
   /* Red ring marks trams with a fresh, matched GPS reading (broadcasting) */
   .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 3; }
-  .tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
+.tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
+  /* PTV ghost ring (field test): cyan = PTV shows this run with no vehicle assigned */
+  .tram-icon-outer.ptv-ghost svg circle { stroke: #00e5ff; stroke-width: 3; }
+  .tram-icon-outer.ptv-ghost { filter: drop-shadow(0 0 4px rgba(0,229,255,0.7)); }
   .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
   /* ── Mobile responsive ── */
@@ -618,6 +621,110 @@ const BEACON_URL = 'https://wmt-collector.wyliechat.workers.dev/beacon';
 function wmtBeacon(e, d) {
   if (!BEACON_ENABLED) return;
   try { navigator.sendBeacon(BEACON_URL, JSON.stringify({ e: e, d: d === undefined ? '-' : String(d) })); } catch (err) {}
+}
+
+// ── PTV field probe (tram-tap enrichment) — FIELD TEST ONLY ──────────────────
+// Off unless the URL carries ?ptv=<probe token>. When on, tapping a tram asks
+// the collector's PTV probe about that tram's next stop (via the stop's GTFS id,
+// gtfs=true), finds this run by route + scheduled time, and either shows the
+// real TramTracker fleet number + PTV's delay when a vehicle is assigned, or
+// rings the dot cyan when the run is in PTV's live window with NO vehicle (a
+// ghost). Public users have no token → no PTV calls, no rings, no change.
+const PTV_TOKEN = (() => { try { return new URLSearchParams(location.search).get('ptv'); } catch (e) { return null; } })();
+const PTV_FIELD = !!PTV_TOKEN;
+const PTV_PROBE_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/ptv-probe';
+// PTV route_id per app route number (from probe /v3/routes, 2026-07). 3a→3.
+const PTV_ROUTE_ID = { '1':721,'109':722,'16':724,'19':725,'57':887,'59':897,
+  '64':909,'67':913,'70':940,'72':947,'75':958,'78':976,'82':1002,'96':1041,
+  '5':1083,'30':1880,'86':1881,'48':2903,'11':3343,'12':8314,'58':11529,
+  '6':11544,'3':15833,'3a':15833,'35':15834 };
+
+// "HH:MM:SS" (Melbourne wall clock) → service-day seconds, matching nowSecs():
+// before 4am belongs to the previous service day, so it continues past 86400.
+function ptvHmsToServiceSecs(hms) {
+  const p = hms.split(':'); const h = +p[0];
+  let sec = h * 3600 + (+p[1]) * 60 + (+p[2]);
+  if (h < 4) sec += 86400;
+  return sec;
+}
+
+// Ask the probe about `nextStopId` (a GTFS stop id, gtfs=true), find this trip's
+// run by route + scheduled time (±90s, nearest), and report what PTV knows.
+// Purely additive and defensive: any failure returns a soft result, never throws.
+async function ptvLookup(trip, nextStopId, schedSecs) {
+  const rid = PTV_ROUTE_ID[trip.routeId];
+  if (!rid) return { matched: false };
+  let data;
+  try {
+    const url = PTV_PROBE_URL + '?token=' + encodeURIComponent(PTV_TOKEN) +
+                '&stop_id=' + encodeURIComponent(nextStopId) + '&gtfs=1';
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) return { error: 'http ' + r.status };
+    data = await r.json();
+  } catch (e) { return { error: 'fetch' }; }
+  const table = (data && data.table) || [];
+  let best = null;
+  for (const d of table) {
+    if (d.route_id !== rid || !d.scheduled_local) continue;
+    const delta = Math.abs(ptvHmsToServiceSecs(d.scheduled_local) - schedSecs);
+    if (delta <= 90 && (!best || delta < best.delta)) best = { d, delta };
+  }
+  if (!best) return { matched: false };
+  const d = best.d;
+  const horizon = ptvHmsToServiceSecs(d.scheduled_local) - nowSecs(); // secs until departure
+  const hasVeh = !!(d.vehicle && d.vehicle.id);
+  return {
+    matched: true,
+    vehicle: hasVeh ? d.vehicle : null,
+    estimateDelayMin: (d.delay_min === undefined ? null : d.delay_min),
+    // Ghost = in PTV's live window (out to ~25 min, allow 5 min slack behind) with no vehicle.
+    isGhost: !hasVeh && horizon <= 1500 && horizon >= -300
+  };
+}
+
+// Called after a tram panel renders (field mode only). Injects a PTV line, then
+// fills it — and toggles the cyan ghost ring — when the lookup resolves.
+async function ptvEnrich(tramId, trip, nextStopIdx) {
+  if (!PTV_FIELD) return;
+  const panel = document.getElementById('info-content');
+  if (panel) panel.insertAdjacentHTML('beforeend',
+    '<div class="info-row" id="ptv-line"><span class="info-label">PTV</span>' +
+    '<span class="info-value" style="font-family:var(--font-mono);font-size:11px;color:var(--muted)">checking\u2026</span></div>');
+  const setLine = (html, color) => {
+    const el = document.getElementById('ptv-line');
+    if (!el || selectedVehicle !== tramId) return;   // user moved to another tram
+    const v = el.querySelector('.info-value');
+    v.innerHTML = html;
+    if (color) v.style.color = color;
+  };
+  const ring = (on) => {
+    const mk = scheduleTrams[tramId];
+    const icon = mk && mk.marker && mk.marker._icon;
+    if (!icon) return;
+    if (on && !icon.classList.contains('gps-broadcasting')) icon.classList.add('ptv-ghost');
+    if (!on) icon.classList.remove('ptv-ghost');
+  };
+  if (nextStopIdx < 0) { setLine('no next stop', '#94a3b8'); return; }
+  const res = await ptvLookup(trip, String(trip.stops[nextStopIdx][0]),
+                              trip.start + trip.stops[nextStopIdx][1]);
+  if (!res || res.error) { setLine('unavailable', '#94a3b8'); return; }
+  if (!res.matched) { setLine('no matching run', '#94a3b8'); ring(false); return; }
+  if (res.vehicle) {
+    ring(false);
+    const acc = res.vehicle.low_floor ? 'low-floor' : 'high-floor';
+    const air = res.vehicle.air_conditioned ? ', a/c' : '';
+    const del = (res.estimateDelayMin == null) ? ''
+      : res.estimateDelayMin > 2 ? ' \u00b7 ' + res.estimateDelayMin + ' min late'
+      : res.estimateDelayMin < -1 ? ' \u00b7 ' + Math.abs(res.estimateDelayMin) + ' min early'
+      : ' \u00b7 on time';
+    setLine('Tram ' + res.vehicle.id + ' (' + acc + air + ')' + del + ' \u2014 confirmed', '#34d399');
+  } else if (res.isGhost) {
+    ring(true);
+    setLine('no vehicle assigned \u2014 possible ghost', '#00e5ff');
+  } else {
+    ring(false);
+    setLine('scheduled, awaiting vehicle', '#94a3b8');
+  }
 }
 
 // Fetch remote dials, validate each against DIAL_BOUNDS, override defaults.
@@ -1510,6 +1617,7 @@ function showScheduleInfo(tramId) {
 
   document.getElementById('info-panel').classList.add('visible');
   if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) map.panTo([d.lat, d.lng], { animate: true });
+  if (PTV_FIELD) ptvEnrich(tramId, t.trip, nextStopIdx);
 }
 
 // ── Load network data then draw ──────────────────────────────────────────────
