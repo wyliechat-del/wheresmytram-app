@@ -1123,7 +1123,7 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
     const d0 = tripStops[0][2];
     if (shape) {
       const p = posOnShape(shape, d0);
-      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true };
+      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true, dist: d0 };
     }
     const s = stops_dict[String(tripStops[0][0])];
     if (!s) return null;
@@ -1134,8 +1134,8 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   if (segIdx === -1) {
     const dLast = tripStops[tripStops.length-1][2];
     if (shape) {
-      const p = posOnShape(shape, dLast);
-      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true };
+ const p = posOnShape(shape, dLast);
+      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true, dist: dLast };
     }
     const s = stops_dict[String(tripStops[tripStops.length-1][0])];
     if (!s) return null;
@@ -1170,8 +1170,8 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   const dist = d0 + (d1 - d0) * frac;
 
   if (shape) {
-    const p = posOnShape(shape, dist);
-    return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: dwellingAtStop };
+  const p = posOnShape(shape, dist);
+    return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: dwellingAtStop, dist: dist };
   }
 
   // Fallback: straight line between stops if no shape
@@ -1473,6 +1473,65 @@ function startScheduleAnimation() {
   if (scheduleTimer) clearInterval(scheduleTimer);
   tickSchedule();
   scheduleTimer = setInterval(tickSchedule, 1000);
+}
+
+// ── Dot consolidation ───────────────────────────────────────────────────────
+// Two scheduled trips can sit almost on top of each other (route 11 alone has
+// ~24 near-duplicate pairs 60-120s apart; route 86 does it too). Two dots for
+// what the rider experiences as one service is worse than one dot, so near
+// neighbours on the same route AND the same direction collapse to one marker.
+// Precedence inside a cluster: the tram the user currently has open (so a dot
+// can never vanish while its panel is up), then a GPS-ringed tram (it carries
+// real data), then lowest trip id — deterministic, so the survivor can never
+// flicker between twins frame to frame.
+// Distance is ALONG-ROUTE, not straight-line: same route+dir means the same
+// shape, so the comparison is exact, and loops (35, the Docklands ends of
+// 11/48/109) can't falsely merge trams sitting on opposite legs.
+const MERGE_DIST_M = 175;   // along-route separation below which dots merge
+
+function tramIsRinged(trip) {
+  const m = TRAM_META[tripKey(trip)];
+  return !!(m && m.pingAge !== undefined);
+}
+
+// Is `a` a better survivor than `b`?
+function betterTram(a, b) {
+  const aSel = selectedVehicle === 'sched_' + a.trip.id;
+  const bSel = selectedVehicle === 'sched_' + b.trip.id;
+  if (aSel !== bSel) return aSel;
+  const aR = tramIsRinged(a.trip), bR = tramIsRinged(b.trip);
+  if (aR !== bR) return aR;
+  return String(a.trip.id) < String(b.trip.id);
+}
+
+function mergeNearbyTrams(placed) {
+  const groups = {};
+  const out = [];
+  for (const it of placed) {
+    // No shape distance (straight-line fallback) → never merge, always render
+    if (typeof it.pos.dist !== 'number') { out.push(it); continue; }
+    const k = it.routeId + '_' + it.trip.dir;
+    (groups[k] = groups[k] || []).push(it);
+  }
+  let mergedAway = 0;
+  for (const k in groups) {
+    const list = groups[k].sort((a, b) => a.pos.dist - b.pos.dist);
+    let i = 0;
+    while (i < list.length) {
+      // Cluster = everything within MERGE_DIST_M of this anchor. Anchored (not
+      // chained) so a long line of evenly spaced trams can't collapse into one.
+      let j = i + 1;
+      while (j < list.length && list[j].pos.dist - list[i].pos.dist <= MERGE_DIST_M) j++;
+      let best = list[i];
+      for (let n = i + 1; n < j; n++) if (betterTram(list[n], best)) best = list[n];
+      out.push(best);
+      mergedAway += (j - i - 1);
+      i = j;
+    }
+  }
+  window.WMT_DEBUG.merge = { mergedAway: mergedAway, rendered: out.length,
+                             thresholdM: MERGE_DIST_M, at: new Date().toLocaleTimeString() };
+  return out;
 }
 
 function tickSchedule() {
