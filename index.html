@@ -1546,18 +1546,23 @@ function tickSchedule() {
   const active = getActiveTrips(cs);
 
 
-  const seen = new Set();
-
+  // ── Pass 1: place every active trip ──
+  const placed = [];
   active.forEach(({ routeId, trip }) => {
     if (!activeRoutes.has(routeId)) return;
     const def = ROUTE_DEFS[routeId];
     if (!def) return;
-
     // Attach routeId to trip so interpolateTrip can look up shape
     trip.routeId = routeId;
     const pos = interpolateTrip(trip, SCHEDULE.stops, TRAM_NETWORK.routes, cs);
     if (!pos) return;
+    placed.push({ routeId, trip, pos, def });
+  });
 
+  // ── Pass 2: merge near-duplicate dots, render only the survivors ──
+  const seen = new Set();
+
+  mergeNearbyTrams(placed).forEach(({ routeId, trip, pos, def }) => {
     // Use trip.id as the tram identifier for schedule trams
     const tramId = 'sched_' + trip.id;
     seen.add(tramId);
