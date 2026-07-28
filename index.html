@@ -648,35 +648,100 @@ function ptvHmsToServiceSecs(hms) {
   return sec;
 }
 
+// Which stop to ask PTV about. The next stop is the obvious choice, but if the
+// tram is practically at it PTV has usually already dropped that departure from
+// its list — and the nearest-match then slides onto the FOLLOWING service, which
+// typically has no vehicle assigned yet. That is exactly the route 86 flicker:
+// two taps 13 seconds apart returned two different runs. So skip ahead to the
+// first stop at least PTV_LEAD_S away.
+const PTV_LEAD_S = 90;
+const PTV_MATCH_S = 90;               // +/- window for matching scheduled times
+const PTV_STOP_TTL_MS = 60 * 1000;    // stop departures cached for a minute
+const PTV_RUN_TTL_MS = 10 * 60 * 1000;
+let PTV_STOP_CACHE = {};   // stopId  -> { at, table }
+let PTV_RUN_CACHE  = {};   // tripKey -> { runRef, vehicle, delayMin, at }
+const PTV_CALLS = { live: 0, cached: 0 };
+
+function ptvQueryStopIdx(trip, cs) {
+  const eff = effectiveStopTimes(trip);
+  for (let i = 0; i < eff.length; i++) if (eff[i] - cs >= PTV_LEAD_S) return i;
+  return -1;
+}
+
+// One request per stop per minute. Nearby trams share next stops, so this is
+// where the call saving actually comes from: tapping five trams heading for the
+// same stop is one request, not five.
+async function ptvFetchStop(stopId) {
+  const now = Date.now();
+  const c = PTV_STOP_CACHE[stopId];
+  if (c && now - c.at < PTV_STOP_TTL_MS) { PTV_CALLS.cached++; return c.table; }
+  const url = PTV_PROBE_URL + '?token=' + encodeURIComponent(PTV_TOKEN) +
+              '&stop_id=' + encodeURIComponent(stopId) + '&gtfs=1';
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error('http ' + r.status);
+  const data = await r.json();
+  const table = (data && data.table) || [];
+  PTV_STOP_CACHE[stopId] = { at: now, table: table };
+  PTV_CALLS.live++;
+  window.WMT_DEBUG.ptv = PTV_CALLS;
+  return table;
+}
+
+// Resolve, applying the cache rule. A run never loses its tram, so a POSITIVE
+// result outranks a later negative: a wrong-run match, an ambiguous pair or a
+// PTV hiccup can no longer erase a good answer that has already been seen.
+async function ptvResolve(trip, cs) {
+  const qi = ptvQueryStopIdx(trip, cs);
+  if (qi < 0) return { noStop: true };
+  const res = await ptvLookup(trip, String(trip.stops[qi][0]),
+                              trip.start + trip.stops[qi][1]);
+  const key = tripKey(trip);
+  const now = Date.now();
+  if (res && res.vehicle) {
+    PTV_RUN_CACHE[key] = { runRef: res.runRef, vehicle: res.vehicle,
+                           delayMin: res.estimateDelayMin, at: now };
+    return res;
+  }
+  const c = PTV_RUN_CACHE[key];
+  if (c && now - c.at < PTV_RUN_TTL_MS) {
+    return { matched: true, runRef: c.runRef, vehicle: c.vehicle,
+             estimateDelayMin: c.delayMin, cachedS: Math.round((now - c.at) / 1000) };
+  }
+  return res;
+}
+
 // Ask the probe about `nextStopId` (a GTFS stop id, gtfs=true), find this trip's
 // run by route + scheduled time (±90s, nearest), and report what PTV knows.
 // Purely additive and defensive: any failure returns a soft result, never throws.
 async function ptvLookup(trip, nextStopId, schedSecs) {
   const rid = PTV_ROUTE_ID[trip.routeId];
   if (!rid) return { matched: false };
-  let data;
-  try {
-    const url = PTV_PROBE_URL + '?token=' + encodeURIComponent(PTV_TOKEN) +
-                '&stop_id=' + encodeURIComponent(nextStopId) + '&gtfs=1';
-    const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return { error: 'http ' + r.status };
-    data = await r.json();
-  } catch (e) { return { error: 'fetch' }; }
-  const table = (data && data.table) || [];
-  let best = null, nearest = null, routeCount = 0;
+  let table;
+  try { table = await ptvFetchStop(nextStopId); }
+  catch (e) { return { error: 'fetch' }; }
+  let best = null, nearest = null, routeCount = 0, inWindow = 0;
   for (const d of table) {
     if (d.route_id !== rid || !d.scheduled_local) continue;
     routeCount++;
     const delta = Math.abs(ptvHmsToServiceSecs(d.scheduled_local) - schedSecs);
     if (nearest === null || delta < nearest) nearest = delta;
-    if (delta <= 90 && (!best || delta < best.delta)) best = { d, delta };
+    if (delta <= PTV_MATCH_S) {
+      inWindow++;
+      if (!best || delta < best.delta) best = { d, delta };
+    }
   }
+  // Two services inside the window — route 11's ~24 twin pairs sit 60-120s apart
+  // and do this routinely. We cannot tell which is ours, and naming the wrong
+  // tram is worse than naming none, so say nothing.
+  if (inWindow > 1) return { matched: false, ambiguous: true, inWindow: inWindow, nearest: nearest };
   if (!best) return { matched: false, routeCount: routeCount, nearest: nearest };
   const d = best.d;
   const horizon = ptvHmsToServiceSecs(d.scheduled_local) - nowSecs(); // secs until departure
   const hasVeh = !!(d.vehicle && d.vehicle.id);
   return {
     matched: true,
+    runRef: d.run_ref,
+    delta: Math.round(best.delta),
     vehicle: hasVeh ? d.vehicle : null,
     estimateDelayMin: (d.delay_min === undefined ? null : d.delay_min),
     // Ghost = in PTV's live window (out to ~25 min, allow 5 min slack behind) with no vehicle.
@@ -706,10 +771,14 @@ async function ptvEnrich(tramId, trip, nextStopIdx) {
     if (on && !icon.classList.contains('gps-broadcasting')) icon.classList.add('ptv-ghost');
     if (!on) icon.classList.remove('ptv-ghost');
   };
-  if (nextStopIdx < 0) { setLine('no next stop', '#94a3b8'); return; }
-  const res = await ptvLookup(trip, String(trip.stops[nextStopIdx][0]),
-                              trip.start + trip.stops[nextStopIdx][1]);
+ // nextStopIdx is superseded by ptvQueryStopIdx (lead time), kept in the
+  // signature so the call site in showScheduleInfo is unchanged.
+  const res = await ptvResolve(trip, nowSecs());
   if (!res || res.error) { setLine('unavailable', '#94a3b8'); return; }
+  if (res.noStop) { setLine('no upcoming stop', '#94a3b8'); return; }
+  if (res.ambiguous) {
+    setLine('ambiguous \u00b7 ' + res.inWindow + ' runs in window', '#94a3b8'); ring(false); return;
+  }
 if (!res.matched) {
     const why = res.routeCount
       ? 'no match \u00b7 nearest ' + Math.round(res.nearest) + 's off'
@@ -723,7 +792,9 @@ if (!res.matched) {
       : res.estimateDelayMin > 2 ? ' \u00b7 ' + res.estimateDelayMin + ' min late'
       : res.estimateDelayMin < -1 ? ' \u00b7 ' + Math.abs(res.estimateDelayMin) + ' min early'
       : ' \u00b7 on time';
-    setLine('Tram ' + res.vehicle.id + ' (' + acc + air + ')' + del + ' \u2014 confirmed', '#34d399');
+    const tag = (res.cachedS !== undefined) ? ' \u00b7 cached ' + res.cachedS + 's'
+              : ' \u00b7 run ' + res.runRef + ' \u00b1' + res.delta + 's';
+    setLine('Tram ' + res.vehicle.id + ' (' + acc + air + ')' + del + tag, '#34d399');
   } else if (res.isGhost) {
     // A red-ringed tram is broadcasting GPS — already proven real. PTV having no
     // vehicle on the matched run then means a feed gap or a wrong-twin match, NOT
@@ -732,10 +803,10 @@ if (!res.matched) {
     const gicon = gmk && gmk.marker && gmk.marker._icon;
     if (gicon && gicon.classList.contains('gps-broadcasting')) {
       ring(false);
-      setLine('GPS live \u00b7 no TramTracker vehicle', '#94a3b8');
+      setLine('GPS live \u00b7 no TramTracker vehicle \u00b7 run ' + res.runRef, '#94a3b8');
     } else {
       ring(true);
-      setLine('no vehicle assigned \u2014 possible ghost', '#00e5ff');
+      setLine('no vehicle assigned \u2014 possible ghost \u00b7 run ' + res.runRef, '#00e5ff');
     }
   } else {
     ring(false);
