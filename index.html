@@ -900,6 +900,78 @@ function distAtSchedSecs(trip, sec) {
   return st[st.length-1][2];
 }
 
+// Physical bounds on the drift rate. A tram can lose time arbitrarily fast (sat
+// at a red light = +1 s per s) but can only make it up as fast as schedule slack
+// allows. Unclamped, a least-squares fit over two jittery pings produces slopes
+// implying teleportation — which then gets multiplied by ping age.
+const R_MIN = -0.3, R_MAX = 1.0;
+// Past this ping age the R-extrapolation is guesswork, so hold it flat instead
+// of projecting ever further forward as a transponder goes quiet.
+const DRIFT_CAP_S = 90;
+
+// ── Correction easing (1 Hz) ────────────────────────────────────────────────
+// gpsDelaySensor publishes a TARGET correction each fetch (every 10s); the dot
+// follows it here, once per second, at a bounded rate. Two things this buys:
+// a large correction arrives as a slide rather than a hop, and a tram that stops
+// passing the GPS gates fades out over several seconds instead of snapping back
+// to pure timetable in a single frame — the "half way to the next stop, then
+// back to the last one" artifact.
+// Rest position is -pullSecsNow(), not 0: PULL shifts the clock forward while
+// GPS_CORR shifts stop times back, so -pull is the correction that holds the dot
+// exactly where PULL will hold it once the key is dropped. No step at handoff.
+let GPS_TARGET = {};         // tripKey → wanted correction, rebuilt every fetch
+const SLEW_PER_SEC  = 1.5;   // max change per second while tracking a live target
+const DECAY_PER_SEC = 1.0;   // max change per second while fading out
+
+function slewToward(from, to, limit) {
+  const d = to - from;
+  if (d >  limit) return from + limit;
+  if (d < -limit) return from - limit;
+  return to;
+}
+
+function easeCorrections() {
+  const next = {};
+  let tracking = 0, fading = 0;
+  for (const key in GPS_TARGET) {
+    const prev = GPS_CORR[key];
+    next[key] = (prev === undefined) ? GPS_TARGET[key]
+                                     : slewToward(prev, GPS_TARGET[key], SLEW_PER_SEC);
+    tracking++;
+  }
+  const rest = -pullSecsNow();
+  for (const key in GPS_CORR) {
+    if (key in next) continue;
+    const moved = slewToward(GPS_CORR[key], rest, DECAY_PER_SEC);
+    if (Math.abs(moved - rest) >= 0.5) { next[key] = moved; fading++; }   // else drop: PULL takes over
+  }
+  GPS_CORR = next;
+  const g = window.WMT_DEBUG.gps;
+  if (g) { g.tracking = tracking; g.fading = fading; }
+}
+
+// ── Jump watch (diagnostic) ─────────────────────────────────────────────────
+// "Does it jump when I'm not looking?" — yes: the animation loop repositions
+// every tram every second whether a panel is open or not. This counts backward
+// moves along the route so the rate can be read rather than guessed. Leave the
+// map open a while, then type WMT_DEBUG.jumps.
+const JUMP_MIN_M = 30;    // ignore sub-30m wobble; a real snap is far bigger
+let JUMP_LAST = {};       // tramId → last along-route distance
+function watchJump(tramId, routeId, pos) {
+  const j = window.WMT_DEBUG.jumps ||
+            (window.WMT_DEBUG.jumps = { count: 0, worstM: 0, worstRoute: null, last: null });
+  const prev = JUMP_LAST[tramId];
+  if (typeof prev === 'number' && typeof pos.dist === 'number') {
+    const back = prev - pos.dist;
+    if (back > JUMP_MIN_M) {
+      j.count++;
+      j.last = { route: routeId, backM: Math.round(back), at: new Date().toLocaleTimeString() };
+      if (back > j.worstM) { j.worstM = Math.round(back); j.worstRoute = routeId; }
+    }
+  }
+  if (typeof pos.dist === 'number') JUMP_LAST[tramId] = pos.dist;
+}
+
 // Least-squares slope of delay-vs-time over the rolling window → R (sec/sec).
 // Best-fit beats endpoint-difference: one jittery reading gets averaged down
 // instead of dominating. Origin-shifted for numerical stability.
@@ -922,7 +994,7 @@ function gpsDelaySensor(json) {
   const nowEpoch = Math.floor(Date.now() / 1000);
   const csNow = nowSecs();
   const meta = {};
-  GPS_CORR = {};   // rebuilt every fetch — same lifecycle as delays
+  GPS_TARGET = {};   // wanted correction, rebuilt every fetch; GPS_CORR eases toward it
   // Drop drift history for trips gone quiet > 15 min (dead transponder / finished)
   const pruneBefore = nowEpoch - 900;
   for (const dk in DRIFT_HIST) {
@@ -962,8 +1034,10 @@ function gpsDelaySensor(json) {
     let R = 0;
     if (hist.length >= 2) {
       const span = hist[hist.length-1].t - hist[0].t;   // freshness/usability guard
-      if (span >= 20 && span <= 600) R = driftSlope(hist);
+ if (span >= 20 && span <= 600) R = driftSlope(hist);
     }
+    if (R < R_MIN) R = R_MIN; else if (R > R_MAX) R = R_MAX;   // physical clamp
+    m.driftR = R;
     // ── Position correction (the secret sauce) ──
     // tuBase = the operator's Trip-Updates delay (our baseline). Distrust GPS
     // readings that disagree with it absurdly (>20 min = teleport/bad match) —
@@ -975,9 +1049,11 @@ function gpsDelaySensor(json) {
     const tuBase = (tu === undefined ? 0 : tu);
     if (Math.abs(obs - tuBase) <= 1200) {
       const gCorr = TUNING.G * (obs - tuBase);          // G-only delay offset
-      const arrowDelay = obs + R * age;                 // full latency+drift projection
-      const dotDelay = tuBase + gCorr;                  // where the dot sits on G alone
-      GPS_CORR[key] = gCorr + TUNING.RT * (arrowDelay - dotDelay);
+// Taper: unbounded, a quiet transponder grows `age` ~10s per fetch while
+      // obs stays fixed, so the dot creeps forward every frame and then falls
+      // off a cliff when age crosses T. Past DRIFT_CAP_S, hold the projection flat.
+      const arrowDelay = obs + R * Math.min(age, DRIFT_CAP_S);      const dotDelay = tuBase + gCorr;                  // where the dot sits on G alone
+      GPS_TARGET[key] = gCorr + TUNING.RT * (arrowDelay - dotDelay);
       dbg.corrected++;
     }
   });
@@ -1541,6 +1617,7 @@ function tickSchedule() {
   const cs = nowSecs();
   // Keep compass + arrow compensation in sync with any map rotation
   if (typeof map.getBearing === 'function') { mapBearing = map.getBearing() || 0; }
+  easeCorrections();   // dots chase the GPS target at 1 Hz, never in one hop
   // Flag stale data: positions keep animating but delays stop updating
   if (lastFetchOk && Date.now() - lastFetchOk > 60000) setStatus('stale', 'stale data');
   const active = getActiveTrips(cs);
@@ -1566,6 +1643,7 @@ function tickSchedule() {
     // Use trip.id as the tram identifier for schedule trams
     const tramId = 'sched_' + trip.id;
     seen.add(tramId);
+    watchJump(tramId, routeId, pos);
 
     const finalLat = pos.lat;
     const finalLng = pos.lng;
