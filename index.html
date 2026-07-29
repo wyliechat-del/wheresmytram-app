@@ -790,11 +790,19 @@ async function ptvApply(tramId, trip, nextStopIdx) {
 
   // ── Tram Number ──
   if (res && res.vehicle && res.vehicle.id) {
-    const acc = res.vehicle.low_floor ? 'low-floor' : 'high-floor';
-    const air = res.vehicle.air_conditioned ? ', a/c' : '';
     const tag = (res.cachedS !== undefined) ? 'cached ' + res.cachedS + 's'
               : 'run ' + res.runRef + ' \u00b1' + res.delta + 's';
-    set('wmt-tramnum', res.vehicle.id + ' \u00b7 ' + acc + air + dim(tag), '#34d399');
+    set('wmt-tramnum', res.vehicle.id + dim(tag), '#34d399');
+    // PTV knows this vehicle's own fit-out, which beats the class-level guess in
+    // TRAM_ACCESS — and carries the line on its own when GTFS-RT gave no class.
+    const acc = (res.vehicle.low_floor === true) ? 'Low floor'
+              : (res.vehicle.low_floor === false) ? 'High floor (steps)' : null;
+    const air = (res.vehicle.air_conditioned === true) ? ', a/c' : '';
+    if (acc) {
+      const m = TRAM_META[tripKey(trip)];
+      const cls = (m && m.model) ? 'Tram model ' + m.model + ' \u2013 ' : '';
+      set('wmt-model', cls + acc + air);
+    }
   } else {
     const why = (!res || res.error) ? 'unavailable'
       : res.noStop    ? 'no upcoming stop'
@@ -1919,7 +1927,7 @@ function showScheduleInfo(tramId) {
       const txt = (m && m.model)
         ? 'Tram model ' + m.model + (TRAM_ACCESS[m.model] ? ' \u2013 ' + TRAM_ACCESS[m.model] : '')
         : 'Tram model not available';
-      return '<div style="font-size:13px;color:#fff;margin-bottom:12px;">' + txt + '</div>';
+      return '<div id="wmt-model" style="font-size:13px;color:#fff;margin-bottom:12px;">' + txt + '</div>';
     })() +
     '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
     nextStopHtml +
