@@ -699,13 +699,14 @@ async function ptvResolve(trip, cs) {
   const now = Date.now();
   if (res && res.vehicle) {
     PTV_RUN_CACHE[key] = { runRef: res.runRef, vehicle: res.vehicle,
-                           delayMin: res.estimateDelayMin, at: now };
+                           delayMin: res.estimateDelayMin, delaySec: res.delaySec, at: now };
     return res;
   }
   const c = PTV_RUN_CACHE[key];
   if (c && now - c.at < PTV_RUN_TTL_MS) {
     return { matched: true, runRef: c.runRef, vehicle: c.vehicle,
-             estimateDelayMin: c.delayMin, cachedS: Math.round((now - c.at) / 1000) };
+             estimateDelayMin: c.delayMin, delaySec: c.delaySec,
+             cachedS: Math.round((now - c.at) / 1000) };
   }
   return res;
 }
@@ -744,9 +745,102 @@ async function ptvLookup(trip, nextStopId, schedSecs) {
     delta: Math.round(best.delta),
     vehicle: hasVeh ? d.vehicle : null,
     estimateDelayMin: (d.delay_min === undefined ? null : d.delay_min),
+    // Seconds, derived from the two local strings — delay_min is minute-rounded
+    // and too coarse to rebuild an arrival time from.
+    delaySec: (d.estimated_local && d.scheduled_local)
+      ? ptvHmsToServiceSecs(d.estimated_local) - ptvHmsToServiceSecs(d.scheduled_local)
+      : null,
     // Ghost = in PTV's live window (out to ~25 min, allow 5 min slack behind) with no vehicle.
     isGhost: !hasVeh && horizon <= 1500 && horizon >= -300
   };
+}
+
+// Fill the panel from PTV where it has something to say, leaving the engine's
+// own numbers in place where it does not. PTV takes priority for Arrives and
+// Running so the two can never contradict each other; Source gains "+ PTV" as
+// the provenance flag; the Tram Number row is PTV-only by nature.
+// Dot positions are untouched — PTV never enters the positioning engine.
+const PTV_FRESH_S = 90;   // a cached delay older than this is stale: number only
+
+async function ptvApply(tramId, trip, nextStopIdx) {
+  if (!PTV_FIELD) return;
+  const panel = document.getElementById('info-content');
+  if (panel) panel.insertAdjacentHTML('beforeend',
+    '<div class="info-row"><span class="info-label">Tram Number</span>' +
+    '<span class="info-value" id="wmt-tramnum" style="font-family:var(--font-mono);font-size:11px;color:#64748b">checking\u2026</span></div>');
+
+  const set = (id, html, color) => {
+    if (selectedVehicle !== tramId) return;        // user moved to another tram
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = html;
+    if (color) el.style.color = color;
+  };
+  const ring = (on) => {
+    const mk = scheduleTrams[tramId];
+    const icon = mk && mk.marker && mk.marker._icon;
+    if (!icon) return;
+    if (on && !icon.classList.contains('gps-broadcasting')) icon.classList.add('ptv-ghost');
+    if (!on) icon.classList.remove('ptv-ghost');
+  };
+  const dim = (s) => ' <span style="opacity:0.55">\u00b7 ' + s + '</span>';
+
+  const res = await ptvResolve(trip, nowSecs());
+  if (selectedVehicle !== tramId) return;
+
+  // ── Tram Number ──
+  if (res && res.vehicle && res.vehicle.id) {
+    const acc = res.vehicle.low_floor ? 'low-floor' : 'high-floor';
+    const air = res.vehicle.air_conditioned ? ', a/c' : '';
+    const tag = (res.cachedS !== undefined) ? 'cached ' + res.cachedS + 's'
+              : 'run ' + res.runRef + ' \u00b1' + res.delta + 's';
+    set('wmt-tramnum', res.vehicle.id + ' \u00b7 ' + acc + air + dim(tag), '#34d399');
+  } else {
+    const why = (!res || res.error) ? 'unavailable'
+      : res.noStop    ? 'no upcoming stop'
+      : res.ambiguous ? 'ambiguous, ' + res.inWindow + ' runs'
+      : res.matched   ? 'run ' + res.runRef + ', no vehicle'
+      : res.routeCount ? 'nearest ' + Math.round(res.nearest) + 's off'
+      : 'no ' + trip.routeId + ' run at that stop';
+    set('wmt-tramnum', 'Not available' + dim(why), '#94a3b8');
+  }
+
+  // ── Ghost ring: unchanged rules, GPS still outranks PTV silence ──
+  if (res && res.matched && res.isGhost) {
+    const mk = scheduleTrams[tramId];
+    const icon = mk && mk.marker && mk.marker._icon;
+    ring(!(icon && icon.classList.contains('gps-broadcasting')));
+  } else {
+    ring(false);
+  }
+
+  // ── PTV drives Arrives + Running when it has a live opinion ──
+  // A cached vehicle id stays valid for the whole trip, but a cached DELAY goes
+  // stale fast — so past PTV_FRESH_S we keep the number and leave the engine's
+  // timing alone rather than showing an old estimate as current.
+  if (!res || !res.matched) return;
+  if (res.delaySec === null || res.delaySec === undefined) return;
+  if (res.cachedS !== undefined && res.cachedS > PTV_FRESH_S) return;
+
+  const srcEl = document.getElementById('wmt-source');
+  if (srcEl && srcEl.textContent.indexOf('PTV') === -1) {
+    srcEl.textContent = srcEl.textContent + ' + PTV';
+  }
+
+  const mins = Math.round(res.delaySec / 60);
+  const label = mins > 2 ? mins + ' min late'
+              : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
+  const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
+  set('wmt-running', label, color);
+
+  if (nextStopIdx >= 0) {
+    const arr = trip.start + trip.stops[nextStopIdx][1] + res.delaySec;
+    const away = Math.round((arr - nowSecs()) / 60);
+    const loc = ((arr % 86400) + 86400) % 86400;
+    const hh = String(Math.floor(loc / 3600) % 24).padStart(2, '0');
+    const mm = String(Math.floor((loc % 3600) / 60)).padStart(2, '0');
+    set('wmt-arrives', hh + ':' + mm + ' (' + (away <= 0 ? 'now' : away + ' min') + ')', '#34d399');
+  }
 }
 
 // Called after a tram panel renders (field mode only). Injects a PTV line, then
@@ -1806,7 +1900,7 @@ function showScheduleInfo(tramId) {
     nextStopHtml = stopName
       ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
         stopName.n + '</span></div>' +
-        '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" style="font-family:var(--font-mono)">' +
+        '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" id="wmt-arrives" style="font-family:var(--font-mono)">' +
         arrStr + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')</span></div>'
       : '';
   }
@@ -1829,10 +1923,12 @@ function showScheduleInfo(tramId) {
     })() +
     '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
     nextStopHtml +
-'<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">' + ((TRAM_META[tripKey(t.trip)] && TRAM_META[tripKey(t.trip)].pingAge !== undefined) ? 'GPS Corrected' : 'Timetable') + '</span></div>' +    (function() {
+'<div class="info-row"><span class="info-label">Source</span><span class="info-value" id="wmt-source" style="font-family:var(--font-mono);font-size:11px;">' + ((TRAM_META[tripKey(t.trip)] && TRAM_META[tripKey(t.trip)].pingAge !== undefined) ? 'GPS Corrected' : 'Timetable') + '</span></div>' +    (function() {
       const tk = tripKey(t.trip);
       const hasData = (tripStopDelays[tk] && tripStopDelays[tk].length) || tripDelays[tk] !== undefined;
-      if (!hasData) return '';
+      // Always render the row: with no DL there is still a slot for PTV to fill.
+      if (!hasData) return '<div class="info-row"><span class="info-label">Running</span>' +
+        '<span class="info-value" id="wmt-running" style="color:#64748b">\u2014</span></div>';
       // Delay at the next stop specifically (varies along the route)
       const ds = nextStopIdx >= 0
         ? effTimes[nextStopIdx] - (t.trip.start + t.trip.stops[nextStopIdx][1])
@@ -1840,12 +1936,12 @@ function showScheduleInfo(tramId) {
       const mins = Math.round(ds / 60);
       const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
       const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
-      return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
+      return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" id="wmt-running" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
     })();
 
   document.getElementById('info-panel').classList.add('visible');
   if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) map.panTo([d.lat, d.lng], { animate: true });
-  if (PTV_FIELD) ptvEnrich(tramId, t.trip, nextStopIdx);
+  if (PTV_FIELD) ptvApply(tramId, t.trip, nextStopIdx);
 }
 
 // ── Load network data then draw ──────────────────────────────────────────────
