@@ -2120,7 +2120,15 @@ function snapStopsToShapes() {
     });
     if (best && best.off <= 100) {   // sanity gate: never snap across a suburb
       const p = posOnShape(best.shape, best.dist);
-      if (p) { entry.marker.setLatLng([p.lat, p.lng]); geo[sid] = p; }
+      if (p) {
+        entry.marker.setLatLng([p.lat, p.lng]);
+        // Keep the RAW registry position and the perpendicular offset. The marker
+        // moves onto the track, but the untouched platform coordinate is what
+        // says which side of the road the platform is physically on — snapping
+        // flattens that away, which is why pairing on snapped coords misfired.
+        geo[sid] = { lat: p.lat, lng: p.lng, bearing: p.bearing,
+                     rawLat: stop.lat, rawLng: stop.lng, off: best.off };
+      }
     }
   });
   orientStopTabs(geo);
@@ -2139,7 +2147,19 @@ function snapStopsToShapes() {
 // road (no cross-road offset to read) -> point west. Both directions are listed
 // in the stop panel regardless, so little is lost.
 const TAB_PAIR_MAX_M = 80;    // a partner further away is a different stop
-const TAB_MIN_OFFSET_M = 3;   // below this the cross-road sign is just noise
+const TAB_MIN_OFFSET_M = 4;   // below this the cross-road offset is just noise
+
+// Read stop ids + current angles off the map with ?tabs=1 (shown in the tooltip),
+// or from WMT_DEBUG.stopTabs.rot in the console.
+const TAB_DEBUG = (() => { try { return new URLSearchParams(location.search).get('tabs') === '1'; } catch (e) { return false; } })();
+
+// Manual overrides for tabs that still point the wrong way. The error is always
+// exactly 180 degrees, so a flip is all that's needed — and a flip stays correct
+// if the underlying track bearing shifts on a schedule regen, which a hardcoded
+// angle would not. Add stop ids as strings.
+const TAB_FLIP = new Set([
+  // '17895',
+]);
 
 function orientStopTabs(geo) {
   const byName = {};
@@ -2149,37 +2169,56 @@ function orientStopTabs(geo) {
     if (!n) return;
     (byName[n] = byName[n] || []).push(sid);
   });
-  let paired = 0;
+ const rotMap = {};   // sid -> degrees, for manual flagging
+  let byOffset = 0, byPair = 0, fallback = 0;
   Object.keys(geo).forEach(sid => {
     const me = geo[sid];
-    let rot = 0;   // default: point west
-    const st = TRAM_NETWORK.stops[sid];
-    const grp = (st && st.n) ? byName[String(st.n).trim()] : null;
-    if (grp && grp.length === 2) {
-      const other = geo[grp[0] === sid ? grp[1] : grp[0]];
-      if (other) {
-        const mLat = 111320, mLng = 111320 * Math.cos(me.lat * Math.PI / 180);
-        const dx = (other.lng - me.lng) * mLng;      // east
-        const dy = (other.lat - me.lat) * mLat;      // north
-        if (Math.sqrt(dx*dx + dy*dy) <= TAB_PAIR_MAX_M) {
-          const b = (me.bearing || 0) * Math.PI / 180;
-          const lx = -Math.cos(b), ly = Math.sin(b); // unit vector 90 deg LEFT of travel
-          const side = dx * lx + dy * ly;            // >0 : partner is on my left
-          if (Math.abs(side) >= TAB_MIN_OFFSET_M) {
-            // Unrotated the tab points west (270); rotation r sends 270 -> 270+r.
-            // Want bearing-90 (left)  -> r = bearing.
-            // Want bearing+90 (right) -> r = bearing - 180.
-            rot = (side > 0) ? (me.bearing - 180) : me.bearing;
-            paired++;
+    let rot = null;
+    // 1. Primary: the platform's own recorded position. The marker sits on the
+    //    track, the registry coordinate sits where the platform physically is,
+    //    so the tab just points from one to the other. No pairing, no naming
+    //    convention, no left-of-travel rule to get backwards.
+    if (me.off >= TAB_MIN_OFFSET_M) {
+      rot = calcBearing(me.lat, me.lng, me.rawLat, me.rawLng) - 270;
+      byOffset++;
+    }
+    // 2. Fallback: a platform recorded on the centreline has no offset to read,
+    //    so point away from its same-named partner instead (raw coords, so this
+    //    is now reliable too).
+    if (rot === null) {
+      const st = TRAM_NETWORK.stops[sid];
+      const grp = (st && st.n) ? byName[String(st.n).trim()] : null;
+      if (grp && grp.length === 2) {
+        const other = geo[grp[0] === sid ? grp[1] : grp[0]];
+        if (other) {
+          const mLat = 111320, mLng = 111320 * Math.cos(me.rawLat * Math.PI / 180);
+          const dx = (other.rawLng - me.rawLng) * mLng;   // east
+          const dy = (other.rawLat - me.rawLat) * mLat;   // north
+          if (Math.sqrt(dx*dx + dy*dy) <= TAB_PAIR_MAX_M) {
+            const b = (me.bearing || 0) * Math.PI / 180;
+            const lx = -Math.cos(b), ly = Math.sin(b);
+            const side = dx * lx + dy * ly;               // >0 : partner on my left
+            if (Math.abs(side) >= TAB_MIN_OFFSET_M) {
+              rot = (side > 0) ? (me.bearing - 180) : me.bearing;
+              byPair++;
+            }
           }
         }
       }
     }
+    if (rot === null) { rot = 0; fallback++; }             // 3. Last resort: west
+    if (TAB_FLIP.has(String(sid))) rot += 180;             // 4. Manual override
     const b10 = ((Math.round(rot / 10) % 36) + 36) % 36;
+    rotMap[sid] = b10 * 10;
     stopMarkers[sid].marker.setIcon(STOP_TAB_ICONS[b10]);
+    if (TAB_DEBUG) {
+      const st2 = TRAM_NETWORK.stops[sid];
+      stopMarkers[sid].marker.setTooltipContent(
+        (st2 && st2.n ? st2.n : sid) + ' \u00b7 id ' + sid + ' \u00b7 ' + (b10 * 10) + '\u00b0');
+    }
   });
-  window.WMT_DEBUG.stopTabs = { oriented: Object.keys(geo).length, paired: paired,
-                                westFallback: Object.keys(geo).length - paired };
+  window.WMT_DEBUG.stopTabs = { oriented: Object.keys(geo).length,
+    byOffset: byOffset, byPair: byPair, westFallback: fallback, rot: rotMap };
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
