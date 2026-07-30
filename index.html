@@ -50,6 +50,22 @@
     width: 16px; height: 16px; border-radius: 50%; box-sizing: border-box;
     background: rgba(100, 116, 139, 0.9); border: 1.5px solid #fff;
   }
+  /* Stop tabs: a 16px-tall stadium whose HOT end sits exactly where the old dot
+     sat, with the tail extending 22px (one tram-dot diameter) to the side of the
+     road the platform is on. A tram sitting on the stop can no longer hide it,
+     and a staggered platform pair reads as two platforms instead of one blob.
+     --r is the tab's own rotation, baked into one of 36 shared 10-degree buckets
+     so all 1,638 markers share 36 icon objects. --mb is the live map bearing,
+     set once on the map container, so rotating the map recomputes every tab from
+     a single style write instead of a 1,638-marker loop. */
+  .stop-tab { background: none; border: none; }
+  .stop-tab i {
+    display: block; width: 38px; height: 16px; box-sizing: border-box;
+    border-radius: 8px;
+    background: rgba(100, 116, 139, 0.9); border: 1.5px solid #fff;
+    transform-origin: 100% 50%;
+    transform: rotate(calc((var(--r, 0) - var(--mb, 0)) * 1deg));
+  }
   .loc-dot {
     width: 18px; height: 18px; border-radius: 50%; box-sizing: border-box;
     background: #38bdf8; border: 2.5px solid #fff;
@@ -2012,13 +2028,32 @@ let stopMarkers = {}; // stopId -> { marker, routes[] }
 // Shared divIcon for every stop dot (16px = the old circleMarker radius 8)
 const STOP_DOT_ICON = L.divIcon({ className: 'stop-dot', iconSize: [16, 16] });
 
+// 36 shared tab icons, one per 10 degrees (worst case 5 degrees of error, under
+// 2px of drift at a 22px reach — invisible). Baking the angle into the icon
+// rather than the element matters: updateStopVisibility removes and re-adds
+// markers on every route toggle and Leaflet rebuilds the DOM node each time,
+// which would wipe an inline style. Unrotated a tab points WEST, which is also
+// the fallback when the side of the road cannot be determined.
+const STOP_TAB_ICONS = (() => {
+  const rules = [], icons = [];
+  for (let b = 0; b < 36; b++) {
+    rules.push('.stop-tab.r' + b + '{--r:' + (b * 10) + '}');
+    icons.push(L.divIcon({ className: 'stop-tab r' + b, html: '<i></i>',
+                           iconSize: [38, 16], iconAnchor: [38, 8] }));
+  }
+  const st = document.createElement('style');
+  st.textContent = rules.join('');
+  document.head.appendChild(st);
+  return icons;
+})();
+
 function drawStopDots() {
   if (!TRAM_NETWORK) return;
   // New format: stops is object {stop_id: {n, lat, lng, r:[routes]}}
   Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
     const routes = stop.r || [];
     const marker = L.marker([stop.lat, stop.lng], {
-      icon: STOP_DOT_ICON,
+      icon: STOP_TAB_ICONS[0],   // west by default; orientStopTabs refines it
       zIndexOffset: 1000,   // above tram markers (100): the stop always wins the tap
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
     marker.on('click', () => { wmtBeacon('stop_tap', sid); showStopInfo(sid); });
@@ -2069,6 +2104,7 @@ function mergeScheduleRouteMembership() {
 // already shows both directions, so nothing is lost.
 function snapStopsToShapes() {
   if (!TRAM_NETWORK) return;
+  const geo = {};   // sid -> {lat,lng,bearing} for the tab-orientation pass
   Object.entries(stopMarkers).forEach(([sid, entry]) => {
     const stop = TRAM_NETWORK.stops[sid];
     if (!stop || !stop.r || !stop.r.length) return;
@@ -2084,9 +2120,67 @@ function snapStopsToShapes() {
     });
     if (best && best.off <= 100) {   // sanity gate: never snap across a suburb
       const p = posOnShape(best.shape, best.dist);
-      if (p) entry.marker.setLatLng([p.lat, p.lng]);
+      if (p) { entry.marker.setLatLng([p.lat, p.lng]); geo[sid] = p; }
     }
   });
+  orientStopTabs(geo);
+}
+
+// Point each stop tab at the side of the road its platform is on.
+// The tab extends 90 degrees off the track; which of the two perpendicular
+// directions is right comes from the platform PAIR. Melbourne stops are
+// direction-specific, the two platforms straddle the road (usually staggered a
+// little along it), and they share an identical name — so each tab simply points
+// AWAY from its partner. That is robust in a way left-of-travel alone is not: on
+// a centre-road reservation the two direction shapes almost coincide, so the
+// nearest-shape bearing can come back 180 degrees out, and flipping the bearing
+// also flips which side the partner appears on, giving the same final answer.
+// No partner, three or more sharing a name, or the two sitting in line along the
+// road (no cross-road offset to read) -> point west. Both directions are listed
+// in the stop panel regardless, so little is lost.
+const TAB_PAIR_MAX_M = 80;    // a partner further away is a different stop
+const TAB_MIN_OFFSET_M = 3;   // below this the cross-road sign is just noise
+
+function orientStopTabs(geo) {
+  const byName = {};
+  Object.keys(geo).forEach(sid => {
+    const st = TRAM_NETWORK.stops[sid];
+    const n = st && st.n ? String(st.n).trim() : null;
+    if (!n) return;
+    (byName[n] = byName[n] || []).push(sid);
+  });
+  let paired = 0;
+  Object.keys(geo).forEach(sid => {
+    const me = geo[sid];
+    let rot = 0;   // default: point west
+    const st = TRAM_NETWORK.stops[sid];
+    const grp = (st && st.n) ? byName[String(st.n).trim()] : null;
+    if (grp && grp.length === 2) {
+      const other = geo[grp[0] === sid ? grp[1] : grp[0]];
+      if (other) {
+        const mLat = 111320, mLng = 111320 * Math.cos(me.lat * Math.PI / 180);
+        const dx = (other.lng - me.lng) * mLng;      // east
+        const dy = (other.lat - me.lat) * mLat;      // north
+        if (Math.sqrt(dx*dx + dy*dy) <= TAB_PAIR_MAX_M) {
+          const b = (me.bearing || 0) * Math.PI / 180;
+          const lx = -Math.cos(b), ly = Math.sin(b); // unit vector 90 deg LEFT of travel
+          const side = dx * lx + dy * ly;            // >0 : partner is on my left
+          if (Math.abs(side) >= TAB_MIN_OFFSET_M) {
+            // Unrotated the tab points west (270); rotation r sends 270 -> 270+r.
+            // Want bearing-90 (left)  -> r = bearing.
+            // Want bearing+90 (right) -> r = bearing - 180.
+            rot = (side > 0) ? (me.bearing - 180) : me.bearing;
+            paired++;
+          }
+        }
+      }
+    }
+    const b10 = ((Math.round(rot / 10) % 36) + 36) % 36;
+    stopMarkers[sid].marker.setIcon(STOP_TAB_ICONS[b10]);
+  });
+  window.WMT_DEBUG.stopTabs = { oriented: Object.keys(geo).length, paired: paired,
+                                westFallback: Object.keys(geo).length - paired };
+}
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -2296,6 +2390,8 @@ function updateCompass() {
   const rose = document.getElementById('compass-rose');
   // rotate the rose so the N/arrow keeps pointing at true north on the rotated map
   if (rose) rose.style.transform = 'rotate(' + (-mapBearing) + 'deg)';
+  // One write, 1,638 tabs recomputed by the browser — no per-marker loop.
+  map.getContainer().style.setProperty('--mb', mapBearing);
 }
 
 // ── Tap-a-stop: next tram in each direction ────────────────────────
