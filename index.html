@@ -790,9 +790,14 @@ async function ptvApply(tramId, trip, nextStopIdx) {
 
   // ── Tram Number ──
   if (res && res.vehicle && res.vehicle.id) {
-    const tag = (res.cachedS !== undefined) ? 'cached ' + res.cachedS + 's'
-              : 'run ' + res.runRef + ' \u00b1' + res.delta + 's';
-    set('wmt-tramnum', res.vehicle.id + dim(tag), '#34d399');
+    // run_ref + match delta are diagnostics, not rider information: recorded for
+    // the console, and shown only as "cached" when the number is held, not live.
+    window.WMT_DEBUG.ptvLast = { route: trip.routeId, tram: res.vehicle.id,
+      run: res.runRef, matchDeltaS: res.delta, delaySec: res.delaySec,
+      cachedS: res.cachedS, at: new Date().toLocaleTimeString() };
+    set('wmt-tramnum', res.vehicle.id +
+        (res.cachedS !== undefined ? dim('cached ' + res.cachedS + 's') : ''),
+        'var(--text)');
     // PTV knows this vehicle's own fit-out, which beats the class-level guess in
     // TRAM_ACCESS — and carries the line on its own when GTFS-RT gave no class.
     const acc = (res.vehicle.low_floor === true) ? 'Low floor'
