@@ -2060,7 +2060,10 @@ function drawStopDots() {
                           // so a tram over the stop no longer blocks its tap target —
                           // the old stops-on-top rule existed only for that overlap.
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
-    marker.on('click', () => { wmtBeacon('stop_tap', sid); showStopInfo(sid); });
+    marker.on('click', () => {
+      if (TAB_DEBUG) { tabEditOpen(sid); return; }   // dev: rotate, don't show arrivals
+      wmtBeacon('stop_tap', sid); showStopInfo(sid);
+    });
     if (routes.some(r => activeRoutes.has(r))) {
       marker.addTo(map);
     }
@@ -2165,6 +2168,134 @@ const TAB_FLIP = new Set([
   // '17895',
 ]);
 
+// ── Tab rotation editor (dev only, ?tabs=1) ─────────────────────────────────
+// Click any stop to open it: nudge in 10-degree steps or flip 180, watch the tab
+// move on the map live, then Save. Overrides accumulate in TAB_TWEAK, backed by
+// localStorage so a reload never loses a session's work, and Copy emits a
+// paste-ready block. None of this is reachable without ?tabs=1.
+const TAB_BTN = 'background:var(--surface2);border:1px solid var(--border);color:var(--text);' +
+  'padding:6px 10px;border-radius:6px;font-family:var(--font-mono);font-size:11px;cursor:pointer';
+let TAB_TWEAK = {};
+try { TAB_TWEAK = JSON.parse(localStorage.getItem('wmt_tab_tweak') || '{}'); } catch (e) {}
+let TAB_COMPUTED = {};                       // sid -> angle the algorithm produced
+let tabEditSid = null, tabEditDeg = 0;
+
+function tabSetIcon(sid, deg) {
+  const e = stopMarkers[sid];
+  if (!e || !e.marker) return 0;
+  const b = ((Math.round(deg / 10) % 36) + 36) % 36;
+  e.marker.setIcon(STOP_TAB_ICONS[b]);
+  return b * 10;
+}
+
+function tabTweakPersist() {
+  try { localStorage.setItem('wmt_tab_tweak', JSON.stringify(TAB_TWEAK)); } catch (e) {}
+  window.WMT_DEBUG.tabTweak = TAB_TWEAK;
+}
+
+function tabEditOpen(sid) {
+  tabEditSid = String(sid);
+  tabEditDeg = (TAB_TWEAK[tabEditSid] !== undefined) ? TAB_TWEAK[tabEditSid]
+             : (TAB_COMPUTED[tabEditSid] || 0);
+  let box = document.getElementById('tab-edit');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'tab-edit';
+    box.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
+      'background:var(--surface);border:1px solid var(--border);border-radius:12px;' +
+      'padding:12px 16px;z-index:3000;font-family:var(--font-ui);font-size:13px;' +
+      'color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.6);min-width:300px;';
+    document.body.appendChild(box);
+  }
+  box.style.display = 'block';
+  tabEditRender();
+}
+
+function tabEditRender() {
+  const box = document.getElementById('tab-edit');
+  if (!box) return;
+  const st = TRAM_NETWORK.stops[tabEditSid] || {};
+  const comp = TAB_COMPUTED[tabEditSid];
+  const n = Object.keys(TAB_TWEAK).length;
+  box.innerHTML =
+    '<div style="font-weight:600;margin-bottom:2px;">' + (st.n || tabEditSid) + '</div>' +
+    '<div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-bottom:10px;">' +
+      'id ' + tabEditSid + ' \u00b7 computed ' + (comp === undefined ? '?' : comp + '\u00b0') + '</div>' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+      '<button onclick="tabEditNudge(-10)" style="' + TAB_BTN + '">\u2212 10\u00b0</button>' +
+      '<div style="flex:1;text-align:center;font-family:var(--font-mono);font-size:18px;font-weight:600;">' +
+        tabEditDeg + '\u00b0</div>' +
+      '<button onclick="tabEditNudge(10)" style="' + TAB_BTN + '">+ 10\u00b0</button>' +
+    '</div>' +
+    '<div style="display:flex;gap:6px;margin-bottom:8px;">' +
+      '<button onclick="tabEditNudge(180)" style="' + TAB_BTN + ';flex:1">Flip 180\u00b0</button>' +
+      '<button onclick="tabEditReset()" style="' + TAB_BTN + ';flex:1">Reset</button>' +
+    '</div>' +
+    '<div style="display:flex;gap:6px;">' +
+      '<button onclick="tabEditSave()" style="' + TAB_BTN + ';flex:1;background:#34d399;color:#000;border-color:#34d399">Save</button>' +
+      '<button onclick="tabEditClose()" style="' + TAB_BTN + ';flex:1">Cancel</button>' +
+      '<button onclick="tabEditCopy()" style="' + TAB_BTN + '" title="Copy all overrides">Copy ' + n + '</button>' +
+    '</div>';
+}
+
+function tabEditNudge(d) {
+  if (!tabEditSid) return;
+  tabEditDeg = ((tabEditDeg + d) % 360 + 360) % 360;
+  tabSetIcon(tabEditSid, tabEditDeg);
+  tabEditRender();
+}
+
+function tabEditReset() {
+  if (!tabEditSid) return;
+  delete TAB_TWEAK[tabEditSid];
+  tabTweakPersist();
+  tabEditDeg = TAB_COMPUTED[tabEditSid] || 0;
+  tabSetIcon(tabEditSid, tabEditDeg);
+  tabEditRender();
+}
+
+function tabEditSave() {
+  if (!tabEditSid) return;
+  // Matching the algorithm again means there is nothing to override.
+  if (tabEditDeg === TAB_COMPUTED[tabEditSid]) delete TAB_TWEAK[tabEditSid];
+  else TAB_TWEAK[tabEditSid] = tabEditDeg;
+  tabTweakPersist();
+  tabEditClose();
+}
+
+function tabEditClose() {
+  if (tabEditSid) {
+    const keep = (TAB_TWEAK[tabEditSid] !== undefined) ? TAB_TWEAK[tabEditSid]
+               : (TAB_COMPUTED[tabEditSid] || 0);
+    tabSetIcon(tabEditSid, keep);          // discard any unsaved nudging
+  }
+  tabEditSid = null;
+  const box = document.getElementById('tab-edit');
+  if (box) box.style.display = 'none';
+}
+
+function tabEditCopy() {
+  const ids = Object.keys(TAB_TWEAK).sort();
+  const lines = ids.map(sid => {
+    const st = TRAM_NETWORK.stops[sid] || {};
+    const comp = TAB_COMPUTED[sid];
+    let note = st.n || '';
+    if (comp !== undefined) {
+      const d = ((TAB_TWEAK[sid] - comp) % 360 + 360) % 360;
+      const how = (d === 180) ? 'flip' : ((d > 180 ? d - 360 : '+' + d) + '\u00b0');
+      note += ' \u2014 was ' + comp + '\u00b0 (' + how + ')';
+    }
+    return "  '" + sid + "': " + TAB_TWEAK[sid] + ',   // ' + note;
+  });
+  const txt = '// ' + ids.length + ' hand-tuned stop tab angles, ' +
+              new Date().toISOString().slice(0, 10) + '\nconst TAB_TWEAK_FIXED = {\n' +
+              lines.join('\n') + '\n};';
+  navigator.clipboard.writeText(txt).then(
+    () => showNotice(ids.length + ' override' + (ids.length === 1 ? '' : 's') + ' copied'),
+    () => { console.log(txt); showNotice('Clipboard blocked \u2014 logged to console'); }
+  );
+}
+
 function orientStopTabs(geo) {
   const byName = {};
   Object.keys(geo).forEach(sid => {
@@ -2211,8 +2342,13 @@ function orientStopTabs(geo) {
       }
     }
     if (rot === null) { rot = 0; fallback++; }             // 3. Last resort: west
-    if (TAB_FLIP.has(String(sid))) rot += 180;             // 4. Manual override
-    const b10 = ((Math.round(rot / 10) % 36) + 36) % 36;
+    if (TAB_FLIP.has(String(sid))) rot += 180;             // 4. Manual flip
+    let b10 = ((Math.round(rot / 10) % 36) + 36) % 36;
+    TAB_COMPUTED[String(sid)] = b10 * 10;                  // what the algorithm chose
+    if (TAB_TWEAK[String(sid)] !== undefined) {            // 5. Hand-tuned angle wins
+      b10 = ((Math.round(TAB_TWEAK[String(sid)] / 10) % 36) + 36) % 36;
+      src = 'tweak';
+    }
     rotMap[sid] = b10 * 10;
     stopMarkers[sid].marker.setIcon(STOP_TAB_ICONS[b10]);
     if (TAB_DEBUG) {
