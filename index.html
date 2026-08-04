@@ -58,7 +58,10 @@
      so all 1,638 markers share 36 icon objects. --mb is the live map bearing,
      set once on the map container, so rotating the map recomputes every tab from
      a single style write instead of a 1,638-marker loop. */
-  .stop-tab { background: none; border: none; }
+ .stop-tab { background: none; border: none; }
+  /* audit mode (?audit=1): red = this stop sits further than AUDIT_LIMIT_M from
+     the line of at least one route it claims, so that route probably isn't real */
+  .stop-tab.rogue i { background: rgba(248,113,113,0.92); border-color: #fecaca; }
   .stop-tab i {
     display: block; width: 38px; height: 16px; box-sizing: border-box;
     border-radius: 8px;
@@ -2043,9 +2046,18 @@ const STOP_TAB_ICONS = (() => {
     icons.push(L.divIcon({ className: 'stop-tab r' + b, html: '<i></i>',
                            iconSize: [38, 16], iconAnchor: [38, 8] }));
   }
-  const st = document.createElement('style');
+ const st = document.createElement('style');
   st.textContent = rules.join('');
   document.head.appendChild(st);
+  return icons;
+})();
+
+// Parallel red set, used only in audit mode to mark suspect stops.
+const STOP_TAB_ICONS_ROGUE = (() => {
+  const icons = [];
+  for (let b = 0; b < 36; b++)
+    icons.push(L.divIcon({ className: 'stop-tab rogue r' + b, html: '<i></i>',
+                           iconSize: [38, 16], iconAnchor: [38, 8] }));
   return icons;
 })();
 
@@ -2061,6 +2073,7 @@ function drawStopDots() {
                           // the old stops-on-top rule existed only for that overlap.
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
     marker.on('click', () => {
+      if (AUDIT_DEBUG) { auditOpen(sid); return; }   // dev: diagnose route membership
       if (TAB_DEBUG) { tabEditOpen(sid); return; }   // dev: rotate, don't show arrivals
       wmtBeacon('stop_tap', sid); showStopInfo(sid);
     });
@@ -2100,9 +2113,9 @@ function mergeScheduleRouteMembership() {
     const stop = TRAM_NETWORK.stops[sid];
     if (stop && stop.r) entry.routes = stop.r;
   });
+  applyStopExclusions();   // strike out route memberships known to be wrong
   updateStopVisibility();
 }
-
 // Snap stop dots onto the drawn route line. Registry coordinates are physical
 // platform positions, often offset 10-30m from the track centreline (median
 // reservations especially), which left dots floating beside the route. Display
@@ -2138,7 +2151,8 @@ function snapStopsToShapes() {
       }
     }
   });
-  orientStopTabs(geo);
+orientStopTabs(geo);
+  markRogueTabs();   // audit mode only: paint the suspects red
 }
 
 // Point each stop tab at the side of the road its platform is on.
@@ -2188,6 +2202,196 @@ function tabFindPartner(sid, me, grp, geo) {
   }
   return n === 1 ? found : null;
 }
+// ── Rogue stop audit (dev only, ?audit=1) ───────────────────────────────────
+// Some stops carry a route that does not actually serve them, which puts a tab
+// on the wrong street AND lists phantom arrivals for that route in the stop
+// panel. The giveaway is geometric: a stop a route really serves sits within a
+// few tens of metres of that route's own shape, so a 400 m offset is a
+// misassignment. Click any stop in audit mode to see its per-route offsets and
+// strike out the wrong ones. Exclusions are (stop, route) pairs — the stop stays
+// live for the routes that genuinely serve it — with '*' to drop a stop outright
+// when its coordinates are simply wrong.
+const AUDIT_DEBUG = (() => { try { return new URLSearchParams(location.search).get('audit') === '1'; } catch (e) { return false; } })();
+const AUDIT_LIMIT_M = 150;   // beyond this, a route almost certainly does not serve the stop
+
+const STOP_EXCLUDE_BAKED = {
+  // '18186': ['48'],
+};
+let STOP_EXCLUDE = Object.assign({}, STOP_EXCLUDE_BAKED);
+try { Object.assign(STOP_EXCLUDE, JSON.parse(localStorage.getItem('wmt_stop_exclude') || '{}')); } catch (e) {}
+let STOP_ROUTES_RAW = {};    // sid -> route list before exclusions (so they can be undone)
+let auditSid = null;
+
+// Smallest distance from a point to any direction-shape of this route.
+function routeOffset(rid, lat, lng) {
+  const dirs = TRAM_NETWORK.routes[rid];
+  if (!dirs) return null;
+  let best = Infinity;
+  Object.values(dirs).forEach(shape => {
+    if (!Array.isArray(shape) || shape.length < 2 || !Array.isArray(shape[0])) return;
+    const p = projectOnShape(shape, lat, lng);
+    if (p && p.off < best) best = p.off;
+  });
+  return best === Infinity ? null : best;
+}
+
+// Every route this stop claims, with how far the stop sits from that route's
+// line — sorted worst first, so a misassignment is the top row.
+function auditRows(sid) {
+  const s = TRAM_NETWORK.stops[sid];
+  if (!s) return [];
+  return (STOP_ROUTES_RAW[sid] || s.r || []).map(rid => ({
+    rid: rid, off: routeOffset(rid, s.lat, s.lng)
+  })).sort((a, b) => (b.off === null ? -1 : b.off) - (a.off === null ? -1 : a.off));
+}
+
+// Rebuild every stop's route list from the untouched original, minus exclusions.
+// Re-runnable: always starts from RAW, so unticking a route restores it.
+function applyStopExclusions() {
+  if (!TRAM_NETWORK) return;
+  let cut = 0, dropped = 0;
+  Object.keys(TRAM_NETWORK.stops).forEach(sid => {
+    const stop = TRAM_NETWORK.stops[sid];
+    if (STOP_ROUTES_RAW[sid] === undefined) STOP_ROUTES_RAW[sid] = (stop.r || []).slice();
+    const ex = STOP_EXCLUDE[sid];
+    let r = STOP_ROUTES_RAW[sid];
+    if (ex === '*') { r = []; dropped++; }
+    else if (Array.isArray(ex) && ex.length) { r = r.filter(x => ex.indexOf(x) === -1); cut += ex.length; }
+    stop.r = r;
+    if (stopMarkers[sid]) stopMarkers[sid].routes = r;
+  });
+  window.WMT_DEBUG.stopExclude = { stops: Object.keys(STOP_EXCLUDE).length,
+                                   pairsCut: cut, stopsDropped: dropped };
+}
+
+// Paint every visible stop red whose worst active-route offset exceeds the limit,
+// so the suspects can be spotted rather than hunted.
+function markRogueTabs() {
+  if (!AUDIT_DEBUG) return;
+  let flagged = 0;
+  Object.keys(stopMarkers).forEach(sid => {
+    const s = TRAM_NETWORK.stops[sid];
+    if (!s || !s.r || !s.r.length) return;
+    let worst = 0;
+    s.r.forEach(rid => {
+      if (!activeRoutes.has(rid)) return;
+      const o = routeOffset(rid, s.lat, s.lng);
+      if (o !== null && o > worst) worst = o;
+    });
+    if (worst <= AUDIT_LIMIT_M) return;
+    const b10 = Math.round((window.WMT_DEBUG.stopTabs &&
+                window.WMT_DEBUG.stopTabs.rot[sid] || 0) / 10) % 36;
+    stopMarkers[sid].marker.setIcon(STOP_TAB_ICONS_ROGUE[b10]);
+    flagged++;
+  });
+  window.WMT_DEBUG.rogue = { flagged: flagged, limitM: AUDIT_LIMIT_M };
+}
+
+function auditPersist() {
+  try { localStorage.setItem('wmt_stop_exclude', JSON.stringify(STOP_EXCLUDE)); } catch (e) {}
+  window.WMT_DEBUG.stopExcludeList = STOP_EXCLUDE;
+}
+
+function auditOpen(sid) {
+  auditSid = String(sid);
+  let box = document.getElementById('audit-box');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'audit-box';
+    box.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
+      'background:var(--surface);border:1px solid var(--border);border-radius:12px;' +
+      'padding:12px 16px;z-index:3000;font-family:var(--font-ui);font-size:13px;' +
+      'color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.6);min-width:320px;max-width:90vw;';
+    document.body.appendChild(box);
+  }
+  box.style.display = 'block';
+  auditRender();
+}
+
+function auditRender() {
+  const box = document.getElementById('audit-box');
+  if (!box) return;
+  const s = TRAM_NETWORK.stops[auditSid] || {};
+  const ex = STOP_EXCLUDE[auditSid];
+  const dropped = ex === '*';
+  const rows = auditRows(auditSid).map(r => {
+    const off = r.off === null ? '?' : Math.round(r.off) + 'm';
+    const bad = r.off !== null && r.off > AUDIT_LIMIT_M;
+    const gone = dropped || (Array.isArray(ex) && ex.indexOf(r.rid) !== -1);
+    const col = bad ? '#f87171' : (r.off !== null && r.off > 50 ? '#fbbf24' : '#34d399');
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;' +
+      (gone ? 'opacity:0.45;text-decoration:line-through;' : '') + '">' +
+      '<span class="info-route-badge" style="background:' +
+        ((ROUTE_DEFS[r.rid] || {}).color || '#888') + ';margin:0;">' + r.rid + '</span>' +
+      '<span style="flex:1;font-family:var(--font-mono);font-size:12px;color:' + col + '">' + off + '</span>' +
+      '<button onclick="auditToggle(\'' + r.rid + '\')" style="' + TAB_BTN + '">' +
+        (gone ? 'Restore' : 'Remove') + '</button></div>';
+  }).join('');
+  const n = Object.keys(STOP_EXCLUDE).length;
+  box.innerHTML =
+    '<div style="font-weight:600;margin-bottom:2px;">' + (s.n || auditSid) + '</div>' +
+    '<div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-bottom:10px;">' +
+      'id ' + auditSid + ' \u00b7 distance from each route\u2019s line</div>' +
+    rows +
+    '<div style="display:flex;gap:6px;margin-top:10px;">' +
+      '<button onclick="auditDropAll()" style="' + TAB_BTN + ';flex:1' +
+        (dropped ? ';background:#f87171;color:#000;border-color:#f87171' : '') + '">' +
+        (dropped ? 'Undrop stop' : 'Drop stop') + '</button>' +
+      '<button onclick="auditClose()" style="' + TAB_BTN + ';flex:1">Close</button>' +
+      '<button onclick="auditCopy()" style="' + TAB_BTN + '" title="Copy all exclusions">Copy ' + n + '</button>' +
+    '</div>';
+}
+
+function auditToggle(rid) {
+  if (!auditSid) return;
+  if (STOP_EXCLUDE[auditSid] === '*') return;          // drop-all wins; undrop first
+  const cur = Array.isArray(STOP_EXCLUDE[auditSid]) ? STOP_EXCLUDE[auditSid].slice() : [];
+  const i = cur.indexOf(rid);
+  if (i === -1) cur.push(rid); else cur.splice(i, 1);
+  if (cur.length) STOP_EXCLUDE[auditSid] = cur; else delete STOP_EXCLUDE[auditSid];
+  auditPersist();
+  applyStopExclusions();
+  updateStopVisibility();
+  auditRender();
+}
+
+function auditDropAll() {
+  if (!auditSid) return;
+  if (STOP_EXCLUDE[auditSid] === '*') delete STOP_EXCLUDE[auditSid];
+  else STOP_EXCLUDE[auditSid] = '*';
+  auditPersist();
+  applyStopExclusions();
+  updateStopVisibility();
+  auditRender();
+}
+
+function auditClose() {
+  auditSid = null;
+  const box = document.getElementById('audit-box');
+  if (box) box.style.display = 'none';
+}
+
+function auditCopy() {
+  const ids = Object.keys(STOP_EXCLUDE).sort();
+  const lines = ids.map(sid => {
+    const s = TRAM_NETWORK.stops[sid] || {};
+    const ex = STOP_EXCLUDE[sid];
+    if (ex === '*') return "  '" + sid + "': '*',   // " + (s.n || '') + ' \u2014 dropped';
+    const why = ex.map(rid => {
+      const o = routeOffset(rid, s.lat, s.lng);
+      return rid + ' @ ' + (o === null ? '?' : Math.round(o)) + 'm';
+    }).join(', ');
+    return "  '" + sid + "': ['" + ex.join("','") + "'],   // " + (s.n || '') + ' \u2014 ' + why;
+  });
+  const txt = '// ' + ids.length + ' stop-route exclusions, ' +
+              new Date().toISOString().slice(0, 10) + '\nconst STOP_EXCLUDE_FIXED = {\n' +
+              lines.join('\n') + '\n};';
+  navigator.clipboard.writeText(txt).then(
+    () => showNotice(ids.length + ' exclusion' + (ids.length === 1 ? '' : 's') + ' copied'),
+    () => { console.log(txt); showNotice('Clipboard blocked \u2014 logged to console'); }
+  );
+}
+
 // Read stop ids + current angles off the map with ?tabs=1 (shown in the tooltip),
 // or from WMT_DEBUG.stopTabs.rot in the console.
 const TAB_DEBUG = (() => { try { return new URLSearchParams(location.search).get('tabs') === '1'; } catch (e) { return false; } })();
