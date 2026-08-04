@@ -2207,8 +2207,133 @@ const TAB_FLIP = new Set([
 // paste-ready block. None of this is reachable without ?tabs=1.
 const TAB_BTN = 'background:var(--surface2);border:1px solid var(--border);color:var(--text);' +
   'padding:6px 10px;border-radius:6px;font-family:var(--font-mono);font-size:11px;cursor:pointer';
-let TAB_TWEAK = {};
-try { TAB_TWEAK = JSON.parse(localStorage.getItem('wmt_tab_tweak') || '{}'); } catch (e) {}
+// Hand-tuned tab angles, swept route by route on the map with ?tabs=1 and folded
+// in here so they survive a browser wipe. localStorage still wins on top, so a
+// live tuning session overrides a baked value until it gets committed.
+const TAB_TWEAK_BAKED = {
+  '950':  100,   // Nicholls St/Wattletree Rd #46
+  '1575': 280,   // Burke Rd/Wattletree Rd #52
+  '4135': 320,   // Fitzroy St/Park St #143
+  '4160':  10,   // Normanby Ave/St Georges Rd #32
+  '4162': 350,   // Miller St/St Georges Rd #34
+  '4174':  20,   // RMIT/Plenty Rd #71
+  '4185':  50,   // Bundoora Park/Plenty Rd #61
+  '4186':  30,   // La Trobe University/Plenty Rd #60
+  '4190':  50,   // Loddon Ave/Plenty Rd #56
+  '4324': 160,   // City Rd/Clarendon St #126
+  '4443': 170,   // Danks St/Mills St #136
+  '4470': 190,   // Normanby Ave/St Georges Rd #32
+  '4485': 190,   // Janefield Dr/Plenty Rd #70
+  '4492': 210,   // Greenwood Dr/Plenty Rd #63
+  '4495': 210,   // La Trobe University/Plenty Rd #60
+  '4499': 230,   // Loddon Ave/Plenty Rd #56
+  '6046':  30,   // Clifton Hill Interchange/Queens Pde #25
+  '6047':  60,   // Michael St/Queens Pde #24
+  '6061': 180,   // Johnston St/Nicholson St #13
+  '6062': 180,   // Rose St/Nicholson St #14
+  '6063': 180,   // Alexandra Pde/Nicholson St #15
+  '6064': 180,   // Freeman St/Nicholson St #16
+  '6068': 190,   // Holden St/Nicholson St #19
+  '6115': 190,   // Clarke St/High St #30
+  '6118': 180,   // Westgarth St/High St #27
+  '6121': 240,   // Gold St/Queens Pde #24
+  '17854':340,   // Melbourne Central Station/Elizabeth St #5
+  '17861':140,   // Victoria St/Errol St #11
+  '17895':240,   // St Vincents Plaza/Victoria Pde #12
+  '17922':280,   // Rosamond Rd/River St #52
+  '17933':330,   // Footscray Market/Leeds St #63
+  '17938':100,   // Union Rd/Maribyrnong Rd #37
+  '17941': 70,   // Ascot Vale Rd/Maribyrnong Rd #34
+  '17948':180,   // Melbourne Showgrounds/Union Rd #33
+  '17957':100,   // Stubbs St/Racecourse Rd #23
+  '18010':280,   // La Trobe St/Victoria St #9
+  '18037':240,   // New Quay Prom/Docklands Dr #D10
+  '18039': 60,   // NewQuay Prom/Docklands Dr #D10
+  '18045': 70,   // Melbourne Central Station/La Trobe St #5
+  '18051': 60,   // St Vincents Plaza/Victoria Pde #12
+  '18095':100,   // Jolimont Station-MCG/Wellington Pde #11
+  '18102':280,   // Jolimont Station-MCG/Wellington Pde #11
+  '18186':340,   // Batman Park/Spencer St #124
+  '18196':160,   // Batman Park/Spencer St #124
+  '18217':140,   // York St/Kings Way #117
+  '18222':320,   // Sturt St/Kings Way #118
+  '18409':320,   // Glenhuntly Rd/Truganini Rd #66
+  '18445':280,   // Alexandra St/Dandenong Rd #36
+  '18447':280,   // Westbury St/Dandenong Rd #34
+  '18491':280,   // Wests Rd/Raleigh Rd #48
+  '18493':190,   // Williamson Rd/Wests Rd #50
+  '18495':190,   // River St/Rosamond Rd #52
+  '18547': 60,   // Royal Park Station/Royal Park #27
+  '18551':340,   // Dawson St/Grantham St #31
+  '18566':290,   // Balwyn Rd/Doncaster Rd #51
+  '18602': 10,   // Cotter St/Church St #54
+  '18623':100,   // St Kilda Rd/Carlisle St #35
+  '18645':100,   // Hawthorn Rd/Balaclava Rd #51
+  '18659': 30,   // Montague St/Bridport St #28
+  '18725':270,   // Moreland Station/Moreland Rd #133
+  '18786':280,   // Glenbervie Rd/Toorak Rd #139
+  '18789':100,   // Lygon St/Elgin St #112
+  '18974':150,   // Chapel St/Brighton Rd #37
+  '18976':170,   // Glen Eira Rd/Brighton Rd #39
+  '19016':190,   // Balaclava Rd/Hawthorn Rd #51
+  '19019':120,   // Hawthorn Rd/Dandenong Rd #48
+  '19032':100,   // The Avenue/Dandenong Rd #34
+  '19054':180,   // Gardiner Station/Burke Rd #51
+  '19097':190,   // Balmain St/Church St #54
+  '19098':180,   // Howard St/Church St #53
+  '19102':190,   // Palermo St/Chapel St #49
+  '19116':190,   // Carlisle St/Chapel St #37
+  '19298':250,   // Yarra Bvd/Swan St #18
+  '19310':200,   // Montague St/Park St #27
+  '19311':200,   // Bridport St/Montague St #28
+  '19338':280,   // Glenferrie Rd/Toorak Rd #139
+  '19340':280,   // Lygon St/Elgin St #112
+  '19357':190,   // Moreland Rd/Nicholson St #129
+  '19418':100,   // Elgar Rd/Whitehorse Rd #56
+  '19419': 90,   // Nelson Rd/Whitehorse Rd #57
+  '19421':280,   // Elgar Rd/Riversdale Rd #61
+  '19456': 90,   // Yarra Bvd/Swan St #18
+  '19489':180,   // Melbourne University/Swanston St #1
+  '19528':160,   // Toorak Rd/St Kilda Rd #22
+  '19562':170,   // Moubray St/St Kilda Rd #26
+  '19563':180,   // High St/St Kilda Rd #27
+  '19572':350,   // Beatrice St/St Kilda Rd #26
+  '19662':310,   // Lincoln Rd/Mt Alexander Rd #46
+  '19690':180,   // Carlisle St/St Kilda Rd #35
+  '19697':180,   // Inkerman St/St Kilda Rd #34
+  '19703':180,   // Alma Rd/St Kilda Rd #32
+  '19708':100,   // Bosisto St/Bridge Rd #17
+  '19712':100,   // Burnley St/Bridge Rd #21
+  '19715':280,   // Burnley St/Bridge Rd #21
+  '19719':280,   // Waltham St/Bridge Rd #17
+  '19781': 90,   // Box Hill Central/Whitehorse Rd #58
+  '19782':280,   // Nelson Rd/Whitehorse Rd #57
+  '19783':280,   // Elgar Rd/Whitehorse Rd #56
+  '20523':260,   // Hawthorn Rd/Dandenong Rd #48
+  '20782':330,   // Burwood Rd/Power St #27
+  '21105':280,   // Station St/Burwood Hwy #64
+  '21110':100,   // Middleborough Rd/Burwood Hwy #66
+  '21117':280,   // Blackburn Rd/Burwood Hwy #70
+  '21118':100,   // Blackburn Rd/Burwood Hwy #70
+  '21121':280,   // Lakeside Dr/Burwood Hwy #72
+  '21122':100,   // Lakeside Dr/Burwood Hwy #72
+  '21123':280,   // Springvale Rd/Burwood Hwy #73
+  '21124':100,   // Springvale Rd/Burwood Hwy #73
+  '22320':100,   // Wests Rd/Cordite Ave #48
+  '46823':190,   // Raleigh Rd/Wests Rd #48
+  '46831':310,   // Anzac Station/St Kilda Rd #20
+  '46849':130,   // Anzac Station/St Kilda Rd #20
+  '46866':250,   // Melbourne Central Station/La Trobe St #5
+  '46871': 90,   // St Vincent Plaza/Victoria St #12
+  '46878':270,   // Box Hill Central/Whitehorse Rd #58
+  '46881':180,   // Grant St-Police Memorial/St Kilda Rd #17
+  '46882':190,   // Glenferrie Railway Station/Glenferrie Rd #74
+  '49999':160,   // Toorak Rd/St Kilda Rd #22
+  '52112':290,   // Fawkner Park/Toorak Rd #123
+  '52113':100,   // Fawkner Park/Toorak Rd #123
+};
+let TAB_TWEAK = Object.assign({}, TAB_TWEAK_BAKED);
+try { Object.assign(TAB_TWEAK, JSON.parse(localStorage.getItem('wmt_tab_tweak') || '{}')); } catch (e) {}
 let TAB_COMPUTED = {};                       // sid -> angle the algorithm produced
 let tabEditSid = null, tabEditDeg = 0;
 
