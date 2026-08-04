@@ -2156,6 +2156,38 @@ function snapStopsToShapes() {
 const TAB_PAIR_MAX_M = 80;    // a partner further away is a different stop
 const TAB_MIN_OFFSET_M = 4;   // below this the cross-road offset is just noise
 
+// Melbourne names each platform after ITS OWN nearest cross-street, so the two
+// sides of one stop routinely carry DIFFERENT names — "Moubray St/St Kilda Rd #26"
+// and "Beatrice St/St Kilda Rd #26" are the same stop — and some pairs simply
+// swap the street order ("Montague St/Bridport St #28" / "Bridport St/Montague
+// St #28"). Neither survives an exact-name match, which is why whole median
+// reservation corridors (St Kilda Rd, Dandenong Rd, Nicholson St) fell through
+// to the west fallback. The stop NUMBER is the stable part of the name, so group
+// on that and let proximity separate the unrelated stops elsewhere on the
+// network that happen to share a number.
+function tabPairKey(stop) {
+  const n = stop && stop.n ? String(stop.n).trim() : '';
+  const m = n.match(/#(\S+)\s*$/);
+  return m ? '#' + m[1] : n;        // unnumbered stop: fall back to the whole name
+}
+
+// The single member of this group within TAB_PAIR_MAX_M. Stop numbers repeat
+// across the network (#34 exists on Dandenong Rd and on Ascot Vale Rd), so
+// proximity does the disambiguating. Two or more candidates in range is
+// ambiguous — return nothing rather than guess.
+function tabFindPartner(sid, me, grp, geo) {
+  if (!grp) return null;
+  const mLat = 111320, mLng = 111320 * Math.cos(me.rawLat * Math.PI / 180);
+  let found = null, n = 0;
+  for (const o of grp) {
+    if (o === sid) continue;
+    const g = geo[o];
+    if (!g) continue;
+    const dx = (g.rawLng - me.rawLng) * mLng, dy = (g.rawLat - me.rawLat) * mLat;
+    if (Math.sqrt(dx * dx + dy * dy) <= TAB_PAIR_MAX_M) { found = o; n++; }
+  }
+  return n === 1 ? found : null;
+}
 // Read stop ids + current angles off the map with ?tabs=1 (shown in the tooltip),
 // or from WMT_DEBUG.stopTabs.rot in the console.
 const TAB_DEBUG = (() => { try { return new URLSearchParams(location.search).get('tabs') === '1'; } catch (e) { return false; } })();
@@ -2297,55 +2329,66 @@ function tabEditCopy() {
 }
 
 function orientStopTabs(geo) {
-  const byName = {};
+  // Group by stop number, then resolve each stop's partner by proximity.
+  const byKey = {};
   Object.keys(geo).forEach(sid => {
-    const st = TRAM_NETWORK.stops[sid];
-    const n = st && st.n ? String(st.n).trim() : null;
-    if (!n) return;
-    (byName[n] = byName[n] || []).push(sid);
+    const k = tabPairKey(TRAM_NETWORK.stops[sid]);
+    if (k) (byKey[k] = byKey[k] || []).push(sid);
   });
- const rotMap = {};   // sid -> degrees, for manual flagging
-  let byOffset = 0, byPair = 0, fallback = 0;
+  const partner = {};
+  Object.keys(geo).forEach(sid => {
+    const p = tabFindPartner(sid, geo[sid],
+                             byKey[tabPairKey(TRAM_NETWORK.stops[sid])], geo);
+    if (p) partner[sid] = p;
+  });
+
+  const rot = {}, srcOf = {};
+  let byOffset = 0, byPair = 0, byPartner = 0, fallback = 0;
+
+  // Pass 1 — the platform's own recorded offset from the track (the marker sits
+  // on the track, the registry coordinate sits where the platform physically is,
+  // so the tab just points from one to the other), else which side of the road
+  // its partner sits on.
   Object.keys(geo).forEach(sid => {
     const me = geo[sid];
-    let rot = null, src = 'west';
-    // 1. Primary: the platform's own recorded position. The marker sits on the
-    //    track, the registry coordinate sits where the platform physically is,
-    //    so the tab just points from one to the other. No pairing, no naming
-    //    convention, no left-of-travel rule to get backwards.
     if (me.off >= TAB_MIN_OFFSET_M) {
-      rot = calcBearing(me.lat, me.lng, me.rawLat, me.rawLng) - 270;
-      byOffset++; src = 'offset';
+      rot[sid] = calcBearing(me.lat, me.lng, me.rawLat, me.rawLng) - 270;
+      srcOf[sid] = 'offset'; byOffset++;
+      return;
     }
-    // 2. Fallback: a platform recorded on the centreline has no offset to read,
-    //    so point away from its same-named partner instead (raw coords, so this
-    //    is now reliable too).
-    if (rot === null) {
-      const st = TRAM_NETWORK.stops[sid];
-      const grp = (st && st.n) ? byName[String(st.n).trim()] : null;
-      if (grp && grp.length === 2) {
-        const other = geo[grp[0] === sid ? grp[1] : grp[0]];
-        if (other) {
-          const mLat = 111320, mLng = 111320 * Math.cos(me.rawLat * Math.PI / 180);
-          const dx = (other.rawLng - me.rawLng) * mLng;   // east
-          const dy = (other.rawLat - me.rawLat) * mLat;   // north
-          if (Math.sqrt(dx*dx + dy*dy) <= TAB_PAIR_MAX_M) {
-            const b = (me.bearing || 0) * Math.PI / 180;
-            const lx = -Math.cos(b), ly = Math.sin(b);
-            const side = dx * lx + dy * ly;               // >0 : partner on my left
-            if (Math.abs(side) >= TAB_MIN_OFFSET_M) {
-              rot = (side > 0) ? (me.bearing - 180) : me.bearing;
-              byPair++; src = 'pair';
-            }
-          }
-        }
-      }
+    const other = partner[sid] ? geo[partner[sid]] : null;
+    if (!other) return;
+    const mLat = 111320, mLng = 111320 * Math.cos(me.rawLat * Math.PI / 180);
+    const dx = (other.rawLng - me.rawLng) * mLng;   // east
+    const dy = (other.rawLat - me.rawLat) * mLat;   // north
+    const b = (me.bearing || 0) * Math.PI / 180;
+    const lx = -Math.cos(b), ly = Math.sin(b);      // unit vector 90 deg LEFT of travel
+    const side = dx * lx + dy * ly;                 // >0 : partner is on my left
+    if (Math.abs(side) >= TAB_MIN_OFFSET_M) {
+      rot[sid] = (side > 0) ? (me.bearing - 180) : me.bearing;
+      srcOf[sid] = 'pair'; byPair++;
     }
-    if (rot === null) { rot = 0; fallback++; }             // 3. Last resort: west
-    if (TAB_FLIP.has(String(sid))) rot += 180;             // 4. Manual flip
-    let b10 = ((Math.round(rot / 10) % 36) + 36) % 36;
+  });
+
+  // Pass 2 — the two platforms of a stop always face opposite ways, so a solved
+  // side solves its partner. Rescues pairs where only one had a usable offset.
+  Object.keys(geo).forEach(sid => {
+    if (rot[sid] !== undefined) return;
+    const op = partner[sid];
+    if (op === undefined || rot[op] === undefined) return;
+    rot[sid] = rot[op] + 180;
+    srcOf[sid] = 'partner'; byPartner++;
+  });
+
+  // Pass 3 — render, applying manual flips and hand-tuned angles last.
+  const rotMap = {};
+  Object.keys(geo).forEach(sid => {
+    let r = rot[sid], src = srcOf[sid] || 'west';
+    if (r === undefined) { r = 0; fallback++; }
+    if (TAB_FLIP.has(String(sid))) r += 180;
+    let b10 = ((Math.round(r / 10) % 36) + 36) % 36;
     TAB_COMPUTED[String(sid)] = b10 * 10;                  // what the algorithm chose
-    if (TAB_TWEAK[String(sid)] !== undefined) {            // 5. Hand-tuned angle wins
+    if (TAB_TWEAK[String(sid)] !== undefined) {            // hand-tuned angle wins
       b10 = ((Math.round(TAB_TWEAK[String(sid)] / 10) % 36) + 36) % 36;
       src = 'tweak';
     }
@@ -2355,11 +2398,12 @@ function orientStopTabs(geo) {
       const st2 = TRAM_NETWORK.stops[sid];
       stopMarkers[sid].marker.setTooltipContent(
         (st2 && st2.n ? st2.n : sid) + ' \u00b7 id ' + sid + ' \u00b7 ' + (b10 * 10) +
-        '\u00b0 \u00b7 ' + src + ' \u00b7 off ' + (me.off === undefined ? '?' : Math.round(me.off)) + 'm');
+        '\u00b0 \u00b7 ' + src + ' \u00b7 off ' +
+        (geo[sid].off === undefined ? '?' : Math.round(geo[sid].off)) + 'm');
     }
   });
-  window.WMT_DEBUG.stopTabs = { oriented: Object.keys(geo).length,
-    byOffset: byOffset, byPair: byPair, westFallback: fallback, rot: rotMap };
+  window.WMT_DEBUG.stopTabs = { oriented: Object.keys(geo).length, byOffset: byOffset,
+    byPair: byPair, byPartner: byPartner, westFallback: fallback, rot: rotMap };
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
