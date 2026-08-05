@@ -2257,95 +2257,13 @@ const AUDIT_DEBUG = (() => { try { return new URLSearchParams(location.search).g
 const AUDIT_LIMIT_M = 150;   // beyond this, a route almost certainly does not serve the stop
 
 const STOP_EXCLUDE_BAKED = {
-  '4141': ['86'],   // Gertrude St/Brunswick St #13 — 86 @ 12m
-  '4142': ['86'],   // Hanover St/Brunswick St #14 — 86 @ 324m
-  '4143': ['86'],   // Bell St/Brunswick St #15 — 86 @ 519m
-  '4144': ['86'],   // Johnston St/Brunswick St #16 — 86 @ 520m
-  '4145': ['86'],   // Leicester St/Brunswick St #17 — 86 @ 521m
-  '4146': ['86'],   // Alexandra Pde/Brunswick St #18 — 86 @ 522m
-  '4147': ['86'],   // Newry St/Brunswick St #19 — 86 @ 522m
-  '4148': ['86'],   // Fitzroy Bowls Club/Brunswick St #20 — 86 @ 573m
-  '4149': ['86'],   // Alfred Cres/St Georges Rd #21 — 86 @ 684m
-  '4150': ['86'],   // Scotchmer St/St Georges Rd #22 — 86 @ 810m
-  '4151': ['86'],   // Park St/St Georges Rd #23 — 86 @ 923m
-  '4152': ['86'],   // Holden St/St Georges Rd #24 — 86 @ 900m
-  '4153': ['86'],   // Miller St/St Georges Rd #25 — 86 @ 778m
-  '4154': ['86'],   // Clarke St/St Georges Rd #26 — 86 @ 687m
-  '4155': ['86'],   // Westbourne Gr/St Georges Rd #27 — 86 @ 688m
-  '4156': ['86'],   // Sumner Ave/St Georges Rd #28 — 86 @ 687m
-  '4157': ['86'],   // Arthurton Rd/St Georges Rd #29 — 86 @ 687m
-  '4158': ['86'],   // Gladstone Ave/St Georges Rd #30 — 86 @ 653m
-  '4159': ['86'],   // Bird Ave/St Georges Rd #31 — 86 @ 650m
-  '4160': ['86'],   // Normanby Ave/St Georges Rd #32 — 86 @ 637m
-  '4161': ['86'],   // Hutton St/St Georges Rd #33 — 86 @ 627m
-  '4162': ['86'],   // Miller St/St Georges Rd #34 — 86 @ 592m
-  '4450': ['86'],   // Gertrude St/Brunswick St #13 — 86 @ 16m
-  '4451': ['86'],   // King William St/Brunswick St #14 — 86 @ 341m
-  '4452': ['86'],   // St David St/Brunswick St #15 — 86 @ 505m
-  '4453': ['86'],   // Johnston St/Brunswick St #16 — 86 @ 506m
-  '4454': ['86'],   // Leicester St/Brunswick St #17 — 86 @ 507m
-  '4455': ['86'],   // Alexandra Pde/Brunswick St #18 — 86 @ 508m
-  '4456': ['86'],   // Newry St/Brunswick St #19 — 86 @ 507m
-  '4457': ['86'],   // Fitzroy Bowls Club/Brunswick St #20 — 86 @ 565m
-  '4458': ['86'],   // Alfred Cres/St Georges Rd #21 — 86 @ 677m
-  '4460': ['86'],   // Park St/St Georges Rd #23 — 86 @ 906m
-  '4461': ['86'],   // Holden St/St Georges Rd #24 — 86 @ 870m
-  '4462': ['86'],   // Miller St/St Georges Rd #25 — 86 @ 758m
-  '4463': ['86'],   // Clarke St/St Georges Rd #26 — 86 @ 681m
-  '4464': ['86'],   // Westbourne Gr/St Georges Rd #27 — 86 @ 682m
-  '4465': ['86'],   // Sumner Ave/St Georges Rd #28 — 86 @ 682m
-  '4466': ['86'],   // Arthurton Rd/St Georges Rd #29 — 86 @ 664m
-  '4468': ['86'],   // Gladstone Ave/St Georges Rd #30 — 86 @ 637m
-  '4469': ['86'],   // Gadd St/St Georges Rd #31 — 86 @ 629m
-  '4470': ['86'],   // Normanby Ave/St Georges Rd #32 — 86 @ 619m
-  '4471': ['86'],   // Hutton St/St Georges Rd #33 — 86 @ 610m
-  '4472': ['86'],   // Miller St/St Georges Rd #34 — 86 @ 586m
-  '17895': ['86'],   // St Vincents Plaza/Victoria Pde #12 — 86 @ 275m
-  '18010': ['86'],   // La Trobe St/Victoria St #9 — 86 @ 197m
-  '18030': ['86'],   // Melbourne Central & State Library/La Trobe St #6 — 86 @ 460m
-  '18033': ['86'],   // Flagstaff Station/La Trobe St #3 — 86 @ 458m
-  '18045': ['86'],   // Melbourne Central Station/La Trobe St #5 — 86 @ 470m
-  '18046': ['86'],   // Melbourne Central & State Library/La Trobe St #6 — 86 @ 467m
-  '18047': '*',   // Russell St/La Trobe St #7 — not in any timetable
-  '18049': ['86'],   // Victoria St/La Trobe St #9 — 86 @ 257m
-  '18051': ['86'],   // St Vincents Plaza/Victoria Pde #12 — 86 @ 276m
-  '18056': ['48'],   // Flinders Street West/Flinders St #D6 — 48 @ 234m
-  '18087': ['48'],   // Market St/Flinders St #3 — 48 @ 230m
-  '18089': ['48'],   // Elizabeth St/Flinders St #4 — 48 @ 229m
-  '18090': ['48'],   // Swanston St/Flinders St #5 — 48 @ 234m
-  '18091': ['48'],   // Russell St/Flinders St #6 — 48 @ 228m
-  '18092': ['48'],   // Spring St/Flinders St #8 — 48 @ 32m
-  '18105': ['48'],   // Spring St/Flinders St #8 — 48 @ 69m
-  '18174': ['48'],   // Russell St/Flinders St #6 — 48 @ 235m
-  '18175': ['48'],   // Swanston St/Flinders St #5 — 48 @ 235m
-  '18176': ['48'],   // Elizabeth St/Flinders St #4 — 48 @ 237m
-  '18178': ['48'],   // Market St/Flinders St #3 — 48 @ 239m
-  '18179': ['48'],   // Victoria Police Centre/Flinders St #D6 — 48 @ 249m
-  '18184': ['12','35','30'],   // Clarendon St/Whiteman St #125 — 12 @ 80m, 35 @ 534m, 30 @ 1475m
-  '18185': ['35','30'],   // Casino-MCEC/Clarendon St #124A — 35 @ 283m, 30 @ 1221m
-  '18186': ['35','30'],   // Batman Park/Spencer St #124 — 35 @ 54m, 30 @ 992m
-  '18187': ['35'],   // Southern Cross Station/Spencer St #122 — 35 @ 327m
-  '18189': ['35','30'],   // Lonsdale St/Spencer St #120 — 35 @ 252m, 30 @ 252m
-  '18190': ['35','30'],   // La Trobe St/Spencer St #119 — 35 @ 26m, 30 @ 26m
-  '18192': ['35','30'],   // Lonsdale St/Spencer St #120 — 35 @ 213m, 30 @ 213m
-  '18193': '*',   // Bourke St/Spencer St #121 — not in any timetable
-  '18194': ['35'],   // Southern Cross Station/Spencer St #122 — 35 @ 280m
-  '18196': ['35','30'],   // Batman Park/Spencer St #124 — 35 @ 108m, 30 @ 1046m
-  '18197': ['35','30'],   // Casino-MCEC/Clarendon St #124A — 35 @ 281m, 30 @ 1219m
-  '19304': ['12','35','30'],   // Port Junction/Whiteman St #125 — 12 @ 76m, 35 @ 541m, 30 @ 1482m
-  '19369': ['12','35','30'],   // Southbank Tram Depot/Light Rail #125A — 12 @ 331m, 35 @ 636m, 30 @ 1568m
-  '19721': ['12','35','30'],   // Southbank Tram Depot/Light Rail #125A — 12 @ 363m, 35 @ 658m, 30 @ 1585m
-  '21231': ['48'],   // Spencer St/Flinders St #1 — 48 @ 235m
-  '21232': ['48'],   // Spencer St/Flinders St #1 — 48 @ 244m
-  '21233': ['48'],   // Melbourne Aquarium/Flinders St #2 — 48 @ 240m
-  '21234': ['48'],   // Melbourne Aquarium/Flinders St #2 — 48 @ 230m
-  '22559': ['86'],   // Scotchmer St/St Georges Rd #22 — 86 @ 813m
-  '46863': ['86'],   // Spencer St/La Trobe St #1 — 86 @ 102m
-  '46864': ['86'],   // Spencer St/La Trobe St #1 — 86 @ 135m
-  '46865': ['86'],   // Flagstaff Station/La Trobe St #3 — 86 @ 465m
-  '46866': ['86'],   // Melbourne Central Station/La Trobe St #5 — 86 @ 460m
-  '46867': ['86'],   // Exhibition St/La Trobe St #8 — 86 @ 465m
-  '46868': ['86'],   // Exhibition St/La Trobe St #8 — 86 @ 459m
+  // Registry-native strays: tram_network.json lists route 12 on these two
+  // Southbank depot-spur platforms, so trimForeignStops cannot reach them
+  // (it only filters what the schedule contributes). Their partner platforms
+  // 19304 and 19721 are clean, which is what makes this look like source noise
+  // rather than a pattern.
+  '18184': ['12'],   // Clarendon St/Whiteman St #125 — 12 @ 80m
+  '19369': ['12'],   // Southbank Tram Depot/Light Rail #125A — 12 @ 331m
 };
 let STOP_EXCLUDE = Object.assign({}, STOP_EXCLUDE_BAKED);
 try { Object.assign(STOP_EXCLUDE, JSON.parse(localStorage.getItem('wmt_stop_exclude') || '{}')); } catch (e) {}
