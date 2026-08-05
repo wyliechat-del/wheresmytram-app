@@ -463,8 +463,10 @@ const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 const ROUTE_DEFS = {
   // Official PTV/Yarra Trams route colours
   '1':   { name: 'East Coburg – South Melbourne Beach', color: '#7DC242', group: 'Swanston' },   // light green
-  '3':   { name: 'Melbourne Uni – East Malvern (Wkdays)', color: '#6AB4E8', group: 'Swanston' }, // light blue
-  '3a':  { name: 'Melbourne Uni – East Malvern (Wknds)', color: '#6AB4E8', group: 'Swanston' },  // light blue
+  // 3a removed (Aug 2026): the schedule generator keys weekend route 3 trips under
+  // '3', so '3a' had no trips on any day, no shape in tram_network.json and no
+  // stops — a toggle that did nothing. Reinstate if a regenerated schedule emits it.
+  '3':   { name: 'Melbourne Uni – East Malvern', color: '#6AB4E8', group: 'Swanston' },          // light blue
   '5':   { name: 'Melbourne Uni – Malvern', color: '#D7282F', group: 'Swanston' },               // red
   '6':   { name: 'Moreland – Glen Iris', color: '#007B5E', group: 'Swanston' },                  // dark green
   '16':  { name: 'Melbourne Uni – Kew', color: '#E8D44D', group: 'Swanston' },                   // light yellow
