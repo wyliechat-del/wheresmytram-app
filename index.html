@@ -1690,6 +1690,47 @@ function nearbyStops() {
   known.forEach(r => { if (!activeRoutes.has(r)) toggleRoute(r); });
 }
 
+// A stop genuinely served by a route appears on 18-98% of its trips; across the
+// whole network there is nothing between 3% and 18%. The stops below that cut are
+// foreign — depot spurs (Southbank, Preston) and event workings to Docklands
+// Stadium that wear a route number while running someone else's track. They drag
+// whole corridors into the stop registry (route 86 picked up all of route 11's
+// northern spine, 61 stops) AND they render as phantom dots, because a trip is
+// interpolated along ITS OWN route's shape using distances that belong to a
+// different path.
+// Trimming the foreign stops out of each trip fixes both at once, and keeps the
+// legitimate middle of a depot-out working instead of deleting the service. A
+// trip left with under two stops was entirely foreign, so it goes.
+const TRIP_MIN_SHARE = 0.05;   // safe band measured at 3%-18%; 5% has margin both ways
+
+function trimForeignStops() {
+  if (!SCHEDULE) return;
+  let foreignStops = 0, tripsTrimmed = 0, tripsDropped = 0;
+  const perRoute = {};
+  Object.keys(SCHEDULE.trips).forEach(rid => {
+    const trips = SCHEDULE.trips[rid];
+    if (!trips || !trips.length) return;
+    const cnt = {};
+    trips.forEach(t => t.stops.forEach(s => { const k = String(s[0]); cnt[k] = (cnt[k] || 0) + 1; }));
+    const foreign = new Set(Object.keys(cnt).filter(k => cnt[k] / trips.length < TRIP_MIN_SHARE));
+    if (!foreign.size) return;
+    foreignStops += foreign.size;
+    let trimmed = 0, dropped = 0;
+    const kept = [];
+    trips.forEach(t => {
+      if (!t.stops.some(s => foreign.has(String(s[0])))) { kept.push(t); return; }
+      const s2 = t.stops.filter(s => !foreign.has(String(s[0])));
+      if (s2.length < 2) { dropped++; return; }   // nothing legitimate left
+      t.stops = s2; trimmed++; kept.push(t);
+    });
+    SCHEDULE.trips[rid] = kept;
+    tripsTrimmed += trimmed; tripsDropped += dropped;
+    perRoute[rid] = { foreign: foreign.size, trimmed: trimmed, dropped: dropped };
+  });
+  window.WMT_DEBUG.tripTrim = { foreignStops: foreignStops, tripsTrimmed: tripsTrimmed,
+                                tripsDropped: tripsDropped, byRoute: perRoute };
+}
+
 // ── Schedule loading ─────────────────────────────────────────────────────────
 async function loadSchedule() {
   const dayType = getTodayType();
@@ -1726,6 +1767,7 @@ async function loadSchedule() {
     Object.entries(SCHEDULE.trips).forEach(([routeId, trips]) =>
       trips.forEach(t => { t.routeId = routeId; })
     );
+   trimForeignStops();   // before the index: foreign stops must not reach matching or membership
     buildSchedIndex();
     // If live data arrived before the schedule finished loading, match it now
     if (LAST_LIVE_JSON) {
