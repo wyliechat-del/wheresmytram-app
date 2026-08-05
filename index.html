@@ -1918,7 +1918,7 @@ function tickSchedule() {
         iconAnchor: [18, 18],
       });
       const marker = L.marker([finalLat, finalLng], { icon, zIndexOffset: 100 });
-      marker.on('click', () => { wmtBeacon('tram_tap', routeId); showScheduleInfo(tramId); });
+      marker.on('click', () => { showScheduleInfo(tramId); });
       marker.addTo(map);
       if (marker._icon && TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined)
         marker._icon.classList.add('gps-broadcasting');
@@ -1965,6 +1965,7 @@ function showScheduleInfo(tramId) {
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
+    wmtBeacon('tram_tap', String(ns[0]));   // dim = next stop id, same space as stop_tap
     // Use TRAM_NETWORK.stops for full stop names
     const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
     const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
