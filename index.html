@@ -1965,7 +1965,7 @@ function showScheduleInfo(tramId) {
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
-    wmtBeacon('tram_tap', t.routeId + '|' + ns[0]);   // dim = routeId|nextStopId; both marginals derive from it
+    wmtBeacon('tram_tap', t.routeId + '|' + t.trip.dir + '|' + ns[0]);   // dim = routeId|dir|nextStopId
     // Use TRAM_NETWORK.stops for full stop names
     const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
     const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
