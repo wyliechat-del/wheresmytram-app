@@ -520,7 +520,7 @@ let tileBase, tileLabels;
 // cartoTiles() is the one place to edit.
 const CARTO_KEY = 'cb1_4nt8_1_f013b8221a393747c131bb95';
 function cartoTiles(style) {
-  return 'https://{s}.basemaps.cartocdn.com/' + style + '/{z}/{x}/{y}{r}.png?key=' + CARTO_KEY;
+  return 'https://{s}.basemaps.cartocdn.com/' + style + '/{z}/{x}/{y}.png?key=' + CARTO_KEY;
 }
 let mapStyle = (() => { try { return localStorage.getItem('melbtrams_map_style') || 'dark'; } catch(e) { return 'dark'; } })();
 
