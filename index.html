@@ -511,6 +511,17 @@ function saveRoutes() {
 
 // ── State ────────────────────────────────────────────────────────────────────
 let tileBase, tileLabels;
+// CARTO basemaps need a key since Aug 2026: tiles requested without one come
+// back watermarked "API KEY REQUIRED". A browser tile key is public by nature
+// (it ships in this file), so it is restricted to the site's domain in the
+// CARTO dashboard - add the Capacitor app's origin there when iOS lands.
+// Free non-commercial tier: 5M tile requests/month. Base + labels are two
+// layers, so every view costs double. If CARTO changes the URL format again,
+// cartoTiles() is the one place to edit.
+const CARTO_KEY = 'cb1_4nt8_1_f013b8221a393747c131bb95';
+function cartoTiles(style) {
+  return 'https://{s}.basemaps.cartocdn.com/' + style + '/{z}/{x}/{y}{r}.png?key=' + CARTO_KEY;
+}
 let mapStyle = (() => { try { return localStorage.getItem('melbtrams_map_style') || 'dark'; } catch(e) { return 'dark'; } })();
 
 function setMapStyle(style) {
@@ -526,17 +537,17 @@ function setMapStyle(style) {
   map.removeLayer(tileLabels);
 
   if (style === 'dark') {
-    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+    tileBase = L.tileLayer(cartoTiles('dark_nolabels'), {
       attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
     }).addTo(map);
-    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    tileLabels = L.tileLayer(cartoTiles('dark_only_labels'), {
       subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
     }).addTo(map);
   } else {
-    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+    tileBase = L.tileLayer(cartoTiles('light_nolabels'), {
       attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
     }).addTo(map);
-    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+    tileLabels = L.tileLayer(cartoTiles('light_only_labels'), {
       subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
     }).addTo(map);
   }
