@@ -564,7 +564,7 @@ let TRAM_NETWORK = null;
 
 // Schedule data loaded from schedule_*.json files
 let SCHEDULE = null;  // merged schedule for today: {stops, trips, shapes}
-let SCHEDULE_DAY = null;  // 'weekday' | 'saturday' | 'sunday'
+let SCHEDULE_DAY = null;  // timetable set loaded, from todaySet() (e.g. 'mon_thu', 'fri', 'saturday')
 
 // Timetable tram state: tramId → {routeId, tripId, lat, lng, bearing, schedPos}
 let scheduleTrams = {};
@@ -989,27 +989,66 @@ const TRAM_ACCESS = {
 let lastFetchOk = 0;            // Date.now() of last successful Worker fetch
 let lastStopPanelRender = 0;    // nowSecs() of last stop-panel render (for live refresh)
 
-// Victorian public holidays 2026. Trams generally run a Saturday timetable on
-// public holidays, except Good Friday + Christmas Day which run Sunday timetables.
-// (2026-09-25 = AFL Grand Final Friday — verify once AFL confirms the date.)
-const VIC_HOLIDAYS_SUNDAY = new Set(['20260403','20261225']);
-const VIC_HOLIDAYS_SATURDAY = new Set([
-  '20260101','20260126','20260309','20260404','20260406','20260425',
-  '20260608','20260925','20261103','20261226','20261228'
-]);
-
-function getTodayType() {
+// ── Timetable calendar (W2 Step 3) ──────────────────────────────────────────
+// calendar.json (written by the GitHub Action from PTV's timetable) maps each service
+// date to a timetable set, e.g. mon_thu, fri, saturday, sunday, and each set to its
+// files and kind. Fridays load only Friday trips, and public holidays get whatever
+// PTV's timetable says runs that day. If calendar.json can't be loaded, or doesn't
+// cover today, the built-in day rules below apply exactly as before.
+let CALENDAR = null, CALENDAR_AT = 0;
+async function loadCalendar() {
+  try {
+    const r = await fetch('calendar.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const c = await r.json();
+    if (!c || c.v !== 1 || !c.dates || !c.sets) throw new Error('unreadable');
+    CALENDAR = c;
+  } catch (e) {
+    console.warn('Timetable calendar unavailable, using built-in day rules:', (e && e.message) || e);
+  }
+  CALENDAR_AT = Date.now();   // retried by loadSchedule after 6 h either way
+}
+function serviceDateStr() {
   // "Service day": before 4am counts as the previous day, matching GTFS >24h
   // times (a 1:30am tram belongs to yesterday's timetable as 25:30).
   const d = new Date(Date.now() - 4*3600*1000);
-  const ds = '' + d.getFullYear() +
-    String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+  return '' + d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+}
+// Today's timetable set: { name, kind, files, source }
+function todaySet() {
+  const ds = serviceDateStr();
+  const nm = CALENDAR && CALENDAR.dates[ds];
+  const s = nm && CALENDAR.sets[nm];
+  if (s && Array.isArray(s.files) && s.files.length) return { name: nm, kind: s.kind, files: s.files, source: 'calendar' };
+  const kind = dayTypeByRules(ds);
+  return { name: kind, kind: kind, source: 'rules', files: kind === 'weekday'
+    ? ['schedule_weekday_a1.json','schedule_weekday_a2.json','schedule_weekday_b.json','schedule_weekday_c.json']
+    : kind === 'saturday' ? ['schedule_saturday.json'] : ['schedule_sunday.json'] };
+}
+
+// Built-in day rules: FALLBACK ONLY since W2 Step 3 (see above). Trams generally run a
+// Saturday timetable on public holidays, except Good Friday + Christmas Day which run
+// Sunday timetables. Grand Final Friday: 2026-09-25; 2027-09-24 is the usual last
+// Friday of September, so verify once the AFL confirms it.
+const VIC_HOLIDAYS_SUNDAY = new Set(['20260403','20261225','20270326','20271225']);
+const VIC_HOLIDAYS_SATURDAY = new Set([
+  '20260101','20260126','20260309','20260404','20260406','20260425',
+  '20260608','20260925','20261103','20261226','20261228',
+  '20270101','20270126','20270308','20270327','20270329','20270614',
+  '20270924','20271102','20271227','20271228'
+]);
+function dayTypeByRules(ds) {
   if (VIC_HOLIDAYS_SUNDAY.has(ds)) return 'sunday';
   if (VIC_HOLIDAYS_SATURDAY.has(ds)) return 'saturday';
-  const dow = d.getDay(); // 0=Sun, 6=Sat
+  const dow = new Date(+ds.slice(0, 4), +ds.slice(4, 6) - 1, +ds.slice(6, 8)).getDay(); // 0=Sun, 6=Sat
   if (dow === 0) return 'sunday';
   if (dow === 6) return 'saturday';
   return 'weekday';
+}
+
+// 'weekday' | 'saturday' | 'sunday': the kind of day it is (the PULL tables use this)
+function getTodayType() {
+  return todaySet().kind;
 }
 
 function nowSecs() {
@@ -1746,20 +1785,37 @@ function trimForeignStops() {
 
 // ── Schedule loading ─────────────────────────────────────────────────────────
 async function loadSchedule() {
-  const dayType = getTodayType();
-  if (SCHEDULE_DAY === dayType && SCHEDULE) return; // already loaded
+  if (!CALENDAR_AT || Date.now() - CALENDAR_AT > 6*3600*1000) await loadCalendar();
+  const today = todaySet();
+  window.WMT_DEBUG.calendar = { source: today.source, set: today.name, kind: today.kind, files: today.files,
+                                build: CALENDAR ? CALENDAR.build : null, date: serviceDateStr() };
+  if (SCHEDULE_DAY === today.name && SCHEDULE) return; // already loaded
 
-  SCHEDULE_DAY = dayType;
+  SCHEDULE_DAY = today.name;
   SCHEDULE = { stops: {}, trips: {}, shapes: [] };
 
-  const files = dayType === 'weekday'
-    ? ['schedule_weekday_a1.json','schedule_weekday_a2.json','schedule_weekday_b.json','schedule_weekday_c.json']
-    : dayType === 'saturday' ? ['schedule_saturday.json'] : ['schedule_sunday.json'];
+  const files = today.files;
 
   setStatus('loading', 'Loading timetable...');
 
   try {
-    const results = await Promise.all(files.map(f => fetch(f).then(r => r.json())));
+    let results;
+    try {
+      results = await Promise.all(files.map(f => fetch(f).then(r => {
+        if (!r.ok) throw new Error(f + ' HTTP ' + r.status);
+        return r.json();
+      })));
+    } catch (e) {
+      if (today.source !== 'calendar') throw e;
+      // The calendar named files we couldn't load: fall back to the day-rule files.
+      console.warn('Timetable set ' + today.name + ' unavailable, using built-in day rules:', (e && e.message) || e);
+      CALENDAR = null;
+      const fb = todaySet();
+      SCHEDULE_DAY = fb.name;
+      window.WMT_DEBUG.calendar = Object.assign({}, window.WMT_DEBUG.calendar,
+        { source: 'rules (set files failed)', set: fb.name, kind: fb.kind, files: fb.files });
+      results = await Promise.all(fb.files.map(f => fetch(f).then(r => r.json())));
+    }
     results.forEach(data => {
       // Merge stops (same across all files)
       if (Object.keys(SCHEDULE.stops).length === 0) {
@@ -3155,6 +3211,13 @@ function toggleAlertsPanel() {
   p.classList.add('visible');
 }
 
+// W2 Step 3: when the service day changes (4am) or the calendar moves to another set,
+// load that timetable, so a tab left open overnight follows along.
+function checkScheduleDay() {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+  if (Date.now() - CALENDAR_AT > 6*3600*1000 || todaySet().name !== SCHEDULE_DAY) loadSchedule();
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   loadConfig().then(() => console.log('[WMT] config:', window.WMT_DEBUG.config));   // fire-and-forget; baked defaults until/if it resolves
@@ -3163,6 +3226,7 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchTrams();
   setInterval(updateClock, 1000);
   setInterval(fetchTrams, 10000);
+  setInterval(checkScheduleDay, 60000);
   updateClock();
 });
 </script>
