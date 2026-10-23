@@ -1,4 +1,4 @@
-# WheresMyTram — automatic timetable updates (W2 Step 1)
+# WheresMyTram — automatic timetable updates (W2 Step 1, with Step 1b line distances)
 # Daily: download Transport Victoria's GTFS Schedule, rebuild the timetable files,
 # run the safety checks, and open (or refresh) a pull request only if the files changed.
 # Nothing reaches the live site until Drew merges the pull request.
@@ -42,7 +42,7 @@ jobs:
 
       - name: Build the timetable files and run the checks
         run: |
-          python3 tools/build_timetable.py --gtfs "$RUNNER_TEMP/gtfs.zip" --repo . \
+          python3 tools/build_timetable.py --gtfs "$RUNNER_TEMP/gtfs.zip" --repo . --line-distances \
             --summary "$RUNNER_TEMP/summary.md" ${{ inputs.allow_large_change && '--allow-large-change' || '' }}
 
       - name: Show the summary on this run's page
