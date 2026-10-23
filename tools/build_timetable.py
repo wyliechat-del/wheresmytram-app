@@ -5,7 +5,11 @@ Builds the viewer's timetable files from Transport Victoria's GTFS Schedule:
   schedule_weekday_a1/a2/b/c.json, schedule_saturday.json, schedule_sunday.json,
   tram_network.json
 in exactly the format the viewer already reads (see claude/w2-design.md, section 1.7),
-plus the collector's data under collector/ (W2 Step 2, see tools/collector_data.py).
+plus the collector's data under collector/ (W2 Step 2, see tools/collector_data.py),
+plus the timetable calendar (W2 Step 3): calendar.json says which timetable set runs on
+each date, and each set that is not one of the three day-type files gets its own
+schedule_<set>.json (e.g. schedule_mon_thu.json, schedule_fri.json). Holiday services
+that copy a regular timetable map to that timetable's set.
 
 Which trips go in: for each weekday (Mon..Sun), the services running on its next
 REGULAR date on or after the build date. A date is regular when no service is
@@ -30,6 +34,7 @@ from collections import Counter, defaultdict
 SCHEDULE_FILES = ['schedule_weekday_a1.json', 'schedule_weekday_a2.json', 'schedule_weekday_b.json',
                   'schedule_weekday_c.json', 'schedule_saturday.json', 'schedule_sunday.json']
 NETWORK_FILE = 'tram_network.json'
+CALENDAR_FILE = 'calendar.json'
 WEEKDAY_PIECES = [  # route lists of the four weekday pieces, as in the June files
     ('schedule_weekday_a1.json', ['86', '75', '16', '6']),
     ('schedule_weekday_a2.json', ['58', '109', '59', '70']),
@@ -256,7 +261,6 @@ def build(gtfs_path, ref, line_distances=False):
     for t in g.rows('trips.txt'):
         trips_all[t['trip_id']] = (routes[t['route_id']], int(t['direction_id'] or 0),
                                    t['service_id'], t['shape_id'])
-    trips = {tid: v for tid, v in trips_all.items() if v[2] in wanted}
     stops_raw = {}
     for s in g.rows('stops.txt'):
         if s.get('location_type', '') in ('', '0'):
@@ -266,9 +270,6 @@ def build(gtfs_path, ref, line_distances=False):
     for tid, seq, sid, arr, dep, dist in g.stop_time_rows():
         if tid in trips_all:
             st[tid].append((seq, sid, arr, dep, dist))
-    missing = [tid for tid in trips if tid not in st]
-    if missing:
-        raise BuildError('%d trips have no stop times (e.g. %s)' % (len(missing), missing[0]))
 
     # all trips of all services (signatures), for describing holiday copies
     entries = {}
@@ -284,6 +285,32 @@ def build(gtfs_path, ref, line_distances=False):
                 raise BuildError('trip %s has no shape_dist_traveled' % tid)
             ent.append([int(sid), secs(arr) - start, round(float(dist) - d0, 1)])
         entries[tid] = (start, ent)
+
+    # ── the timetable calendar (W2 Step 3) ──
+    # A holiday service that is an exact copy of a regular one is replaced by it.
+    sig_of = defaultdict(set)
+    for tid, (r, d, svc, sh) in trips_all.items():
+        if tid in entries:
+            start, ent = entries[tid]
+            sig_of[svc].add((r, d, start, tuple((e[0], e[1]) for e in ent)))
+    twin = {}
+    for s in sorted(cal.one_off):
+        for x in sorted(set(sig_of) - cal.one_off):
+            if sig_of.get(s) and sig_of[s] == sig_of[x]:
+                twin[s] = x
+                break
+    # (the whole release, not just from today, so daily builds are identical until PTV
+    #  publishes a change and no pull request is opened just because a day passed)
+    cal_dates = {}
+    for day in cal.dates:
+        if cal.active[day]:
+            cal_dates[day] = frozenset(twin.get(s, s) for s in cal.active[day])
+    if cal_dates:
+        wanted = wanted | frozenset().union(*cal_dates.values())
+    trips = {tid: v for tid, v in trips_all.items() if v[2] in wanted}
+    missing = [tid for tid in trips if tid not in entries]
+    if missing:
+        raise BuildError('%d trips have no stop times (e.g. %s)' % (len(missing), missing[0]))
 
     # route lines: most-used shape per (route, dir) among the selected trips
     use = Counter((r, d, sh) for tid, (r, d, svc, sh) in trips.items())
@@ -381,6 +408,73 @@ def build(gtfs_path, ref, line_distances=False):
             out[r] = arr
         files[f] = {'stops': stops_dict, 'shapes': shapes, 'trips': out}
 
+    # timetable sets for the calendar: the three day-type files where they match,
+    # otherwise one schedule_<set>.json per distinct service combination
+    def kind_of(sig):
+        days = set()
+        for s in sig:
+            if s in cal.base:
+                days |= {i for i, on in enumerate(cal.base[s][0]) if on}
+        return 'saturday' if days and days <= {5} else ('sunday' if days and days <= {6} else 'weekday')
+
+    def name_of(sig):
+        if len(sig) == 1:
+            s = next(iter(sig))
+            if s in cal.base and s not in cal.one_off:
+                ds = [i for i, on in enumerate(cal.base[s][0]) if on]
+                if ds and ds == list(range(ds[0], ds[-1] + 1)):
+                    return DOW[ds[0]].lower() + ('' if len(ds) == 1 else '_' + DOW[ds[-1]].lower())
+        return 'svc_' + '_'.join(sorted(sig)).lower()
+
+    day_files = {'weekday': [f for f, rl in WEEKDAY_PIECES], 'saturday': ['schedule_saturday.json'],
+                 'sunday': ['schedule_sunday.json']}
+    set_of_sig = {}
+    for day in ('weekday', 'saturday', 'sunday'):
+        set_of_sig.setdefault(day_services[day], day)
+    sets = {}
+    for sig in sorted(set(cal_dates.values()), key=lambda s: sorted(s)):
+        if sig in set_of_sig:
+            sets.setdefault(set_of_sig[sig], sig)
+            continue
+        nm = base = name_of(sig)
+        k = 2
+        while nm in sets or nm in day_files:
+            nm = '%s_%d' % (base, k)
+            k += 1
+        set_of_sig[sig] = nm
+        sets[nm] = sig
+    set_files = []
+    for nm, sig in sorted(sets.items()):
+        if nm in day_files:
+            continue
+        per = defaultdict(list)
+        for tid, (r, d, svc, sh) in trips.items():
+            if svc in sig:
+                start, ent = entries[tid]
+                per[r].append({'id': tid, 'dir': d, 'sh': sh, 'start': start, 'stops': ent})
+        for r in per:
+            per[r].sort(key=lambda t: (t['start'], t['id']))
+        order = [r for r in WEEKEND_ORDER if r in per] + sorted(set(per) - set(WEEKEND_ORDER))
+        shapes, ix, out = [], {}, {}
+        for r in order:
+            arr = []
+            for t in per[r]:
+                if t['sh'] not in ix:
+                    ix[t['sh']] = len(shapes)
+                    shapes.append(t['sh'])
+                arr.append({'id': t['id'], 'dir': t['dir'], 'sh': ix[t['sh']],
+                            'start': t['start'], 'stops': t['stops']})
+            out[r] = arr
+        f = 'schedule_%s.json' % nm
+        files[f] = {'stops': stops_dict, 'shapes': shapes, 'trips': out}
+        set_files.append(f)
+    calendar = {
+        'v': 1, 'release': g.release, 'first': ymd(cal.first), 'last': ymd(cal.last),
+        'sets': {nm: {'kind': nm if nm in day_files else kind_of(sig),
+                      'files': day_files.get(nm, ['schedule_%s.json' % nm])} for nm, sig in sorted(sets.items())},
+        'dates': {ymd(d): set_of_sig[sig] for d, sig in sorted(cal_dates.items())},
+    }
+
     # tram_network.json
     share = defaultdict(Counter)
     ntrips = Counter()
@@ -405,6 +499,7 @@ def build(gtfs_path, ref, line_distances=False):
         'pick': pick, 'day_services': day_services, 'calendar': cal, 'base': cal.base,
         'trips': trips, 'trips_all': trips_all, 'entries': entries, 'rebased': rebased, 'left_off_line': left,
         'notes': notes, 'stops_raw': stops_raw, 'lines': lines,
+        'calendar_json': calendar, 'set_files': set_files, 'set_sigs': sets, 'twin': twin,
     }
     return files, info
 
@@ -470,7 +565,8 @@ def svc_label(cal, s):
 
 def check_and_summarise(files, info, repo, allow_large):
     errors, warnings = [], []
-    blobs = {f: serialise(f, files[f]) for f in SCHEDULE_FILES + [NETWORK_FILE]}
+    set_files = info['set_files']
+    blobs = {f: serialise(f, files[f]) for f in SCHEDULE_FILES + set_files + [NETWORK_FILE]}
     prev = load_prev(repo)
     cal = info['calendar']
     ref = info['ref']
@@ -498,7 +594,7 @@ def check_and_summarise(files, info, repo, allow_large):
     bad = set()
     backwards = []
     odd_offsets = 0
-    for f in SCHEDULE_FILES:
+    for f in SCHEDULE_FILES + set_files:
         for r, arr in files[f]['trips'].items():
             for t in arr:
                 for s in t['stops']:
@@ -520,7 +616,7 @@ def check_and_summarise(files, info, repo, allow_large):
         if fallback:
             warnings.append('No regular %s left in the release; used %s.' % (DOW[w], d))
 
-    new_sets = trip_sets(files)
+    new_sets = trip_sets({f: files[f] for f in SCHEDULE_FILES})
     old_sets = trip_sets({f: v for f, v in prev.items() if f != NETWORK_FILE}) if prev else None
     rows = []
     large = []
@@ -610,18 +706,33 @@ def check_and_summarise(files, info, repo, allow_large):
             else:
                 parts.append(svc_label(cal, s))
         rem = sorted(cal.removed.get(day, ()))
-        hol.append('| %s %s | %s | %s |' % (DOW[day.weekday()], day.isoformat(), ', '.join(parts) or 'no service',
-                                           ', '.join(rem) or '-'))
+        hol.append('| %s %s | %s | %s | %s |' % (DOW[day.weekday()], day.isoformat(), ', '.join(parts) or 'no service',
+                                                ', '.join(rem) or '-', info['calendar_json']['dates'].get(ymd(day), '-')))
+    # the timetable calendar (W2 Step 3)
+    calj = info['calendar_json']
+    for nm, s in calj['sets'].items():
+        for f in s['files']:
+            if f not in blobs:
+                errors.append('calendar set %s needs %s, which was not built' % (nm, f))
+    gaps = [ref + dt.timedelta(i) for i in range(COVER_DAYS) if ymd(ref + dt.timedelta(i)) not in calj['dates']]
+    if gaps:
+        warnings.append('No trams timetabled on: %s (the viewer falls back to its own day rules there).'
+                        % ', '.join(d.isoformat() for d in gaps))
+
     fp = hashlib.sha256()
-    for f in SCHEDULE_FILES + [NETWORK_FILE]:
+    for f in SCHEDULE_FILES + sorted(set_files) + [NETWORK_FILE]:
         fp.update(f.encode() + b'\0' + blobs[f] + b'\0')
+    fp.update(b'calendar.json\0' + json.dumps(calj, sort_keys=True, separators=(',', ':')).encode() + b'\0')
     fingerprint = fp.hexdigest()[:12]
+    cal_out = {'v': 1, 'build': fingerprint}
+    cal_out.update((k, v) for k, v in calj.items() if k != 'v')
+    blobs[CALENDAR_FILE] = json.dumps(cal_out, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
 
     # collector data (W2 Step 2), baked from exactly the bytes the site will serve
     coll = {}
     try:
-        parsed = {f: json.loads(blobs[f].decode('utf-8')) for f in SCHEDULE_FILES}
-        coll = collector_data.collector_files(parsed, fingerprint, info['release'])
+        parsed = {f: json.loads(blobs[f].decode('utf-8')) for f in SCHEDULE_FILES + set_files}
+        coll = collector_data.collector_files(parsed, fingerprint, info['release'], calj)
     except Exception as e:
         errors.append('collector data could not be built: %s' % e)
     for n, b in coll.items():
@@ -646,6 +757,11 @@ def check_and_summarise(files, info, repo, allow_large):
     if info['rebased'] or info['left_off_line']:
         L.append('- **Line distances (Step 1b):** %d trips measured along the route line; %d left as they were (they leave the line).'
                  % (info['rebased'], info['left_off_line']))
+    ntr = lambda f: sum(len(a) for a in files[f]['trips'].values())
+    L.append('- **Timetable calendar:** %d dates; sets: %s.' % (len(calj['dates']), '; '.join(
+        '%s (%s, %s, %d trips, %d dates)' % (nm, s['kind'], ' + '.join(s['files']) if len(s['files']) == 1 else 'the %d weekday pieces' % len(s['files']),
+                                              sum(ntr(f) for f in s['files']), sum(1 for v in calj['dates'].values() if v == nm))
+        for nm, s in calj['sets'].items())))
     L.append('- **Output fingerprint:** `%s`' % fingerprint)
     if coll_line:
         L.append(coll_line)
@@ -678,8 +794,8 @@ def check_and_summarise(files, info, repo, allow_large):
     L.append('### Special dates ahead (from the timetable calendar)')
     if hol:
         L.append('')
-        L.append('| Date | Runs | Removed that day |')
-        L.append('|---|---|---|')
+        L.append('| Date | Runs | Removed that day | Map loads set |')
+        L.append('|---|---|---|---|')
         L += hol
     else:
         L.append('None in this release.')
@@ -688,7 +804,7 @@ def check_and_summarise(files, info, repo, allow_large):
     L.append('')
     L.append('| File | Before | After |')
     L.append('|---|---|---|')
-    for f in SCHEDULE_FILES + [NETWORK_FILE]:
+    for f in SCHEDULE_FILES + sorted(set_files) + [NETWORK_FILE, CALENDAR_FILE]:
         p = os.path.join(repo, f)
         before = '%.1f MB' % (os.path.getsize(p) / 1e6) if os.path.exists(p) else '-'
         L.append('| %s | %s | %.1f MB |' % (f, before, len(blobs[f]) / 1e6))
@@ -734,6 +850,15 @@ def main(argv=None):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'wb') as fh:
             fh.write(b)
+    # remove files an earlier build wrote that this one no longer produces
+    # (a special-date timetable set that has passed, a route that has gone)
+    stale = [f for f in os.listdir(out) if re.match(r'schedule_.+\.json$', f) and f not in blobs]
+    cdir = os.path.join(out, 'collector')
+    if os.path.isdir(cdir):
+        stale += ['collector/' + f for f in os.listdir(cdir) if f.endswith('.json') and 'collector/' + f not in blobs]
+    for f in stale:
+        os.remove(os.path.join(out, f))
+        print('Removed %s (no longer built).' % f)
     print('Wrote %d files to %s (fingerprint %s).' % (len(blobs), out, fp))
     return 0
 
