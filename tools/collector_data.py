@@ -7,6 +7,9 @@ BEACON_STOP_CSV, PACE_STOPS/GEOM/PATTERNS/TRIPS). From W1.6 it reads it from the
   collector/pair-<route>.json    one route's PTV-pairing tables (geometry, patterns, trips)
 Encodings are exactly the old baked ones (same pattern ids), so the collector's decoders
 are unchanged. bake() reproduces the July bake byte-for-byte from the June files.
+W2 Step 3: the timetable calendar's extra sets (e.g. mon_thu, fri) get their own
+sched-<set>.json and trips in the pair files, and the manifest carries the calendar.
+The three day types are baked exactly as before (extra sets never move a pattern id).
 """
 import hashlib, json
 from collections import defaultdict
@@ -35,11 +38,12 @@ def dumps(o):
     return json.dumps(o, separators=(',', ':'), ensure_ascii=False)
 
 
-def bake(files):
-    """files: name -> parsed schedule JSON. Returns the old constants as Python objects."""
+def bake(files, extra_sets=None):
+    """files: name -> parsed schedule JSON; extra_sets: set name -> its files (W2 Step 3).
+    Returns the old constants as Python objects (plus the extra sets' entries)."""
     stops_all = {}
     day_data, day_stats, sched_index = {}, {}, {}
-    for day, names in DAYS.items():
+    for day, names in list(DAYS.items()) + sorted((extra_sets or {}).items()):
         trips, per, nstops = {}, {}, 0
         for f in names:
             d = files[f]
@@ -53,10 +57,17 @@ def bake(files):
         day_stats[day] = {'routes': len(per), 'stops': nstops}
 
     # canonical distance per (route|dir, stop): trip-count-weighted mode of the rounded distance
+    # (only the day types vote, plus any extra-set trip that is not already in them,
+    #  so adding a set like mon_thu never changes the corridor geometry)
     votes = defaultdict(lambda: defaultdict(int))
+    seen = set()
     for day, trips in day_data.items():
         for r, arr in trips.items():
             for t in arr:
+                key = (r, t['dir'], t['start'], tuple((s[0], s[1]) for s in t['stops']))
+                if day not in DAYS and key in seen:
+                    continue
+                seen.add(key)
                 gk = '%s|%s' % (r, t['dir'])
                 for sid, off, dist in t['stops']:
                     votes[gk][(str(sid), round(dist))] += 1
@@ -126,9 +137,12 @@ def constants_js(b):
     }
 
 
-def collector_files(files, build, release):
+def collector_files(files, build, release, calendar=None):
     """name -> bytes for everything under collector/ (paths relative to collector/)."""
-    b = bake(files)
+    extra = {}
+    if calendar:
+        extra = {nm: s['files'] for nm, s in calendar['sets'].items() if nm not in DAYS}
+    b = bake(files, extra)
     out = {}
     for day, idx in b['SCHED_INDEX'].items():
         out['sched-%s.json' % day] = dumps(idx)
@@ -142,7 +156,7 @@ def collector_files(files, build, release):
             sids.update(seg.split(',')[0] for seg in enc.split(';'))
         stops = {sid: b['PACE_STOPS'][sid] for sid in sorted(sids, key=int)}
         pats = {str(pid): p for pid, p in enumerate(b['PACE_PATTERNS']) if p.split('|')[0] == r}
-        trips = {day: b['PACE_TRIPS'][day][r] for day in DAYS if r in b['PACE_TRIPS'].get(day, {})}
+        trips = {day: b['PACE_TRIPS'][day][r] for day in b['PACE_TRIPS'] if r in b['PACE_TRIPS'][day]}
         out['pair-%s.json' % r] = dumps({'stops': stops, 'geom': geom, 'patterns': pats, 'trips': trips})
     routes = sorted({r for idx in b['SCHED_INDEX'].values() for r in idx}, key=lambda x: (len(x), x))
     corridors = {k: len(v.split(';')) for k, v in sorted(b['PACE_GEOM'].items())}
@@ -151,5 +165,8 @@ def collector_files(files, build, release):
         'corridors': corridors, 'patterns': len(b['PACE_PATTERNS']), 'beaconStops': b['BEACON_STOP_CSV'],
         'files': {n: hashlib.sha256(v.encode('utf-8')).hexdigest()[:12] for n, v in sorted(out.items())},
     }
+    if calendar:
+        manifest['calendar'] = {'dates': calendar['dates'],
+                                'sets': {nm: s['kind'] for nm, s in calendar['sets'].items()}}
     out['manifest.json'] = dumps(manifest)
     return {n: v.encode('utf-8') for n, v in out.items()}
