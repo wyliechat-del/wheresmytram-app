@@ -1,7 +1,7 @@
-# WheresMyTram — automatic timetable updates (W2 Steps 1, 1b and 2)
-# Daily: download Transport Victoria's GTFS Schedule, rebuild the timetable files and the
-# collector's data (collector/), run the safety checks, and open (or refresh) a pull request
-# only if anything changed.
+# WheresMyTram — automatic timetable updates (W2 Steps 1, 1b, 2 and 3)
+# Daily: download Transport Victoria's GTFS Schedule, rebuild the timetable files, the
+# timetable calendar (calendar.json) and the collector's data (collector/), run the safety
+# checks, and open (or refresh) a pull request only if anything changed.
 # Nothing reaches the live site until Drew merges the pull request.
 
 name: Timetable update
@@ -55,7 +55,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
         run: |
-          FILES="schedule_weekday_a1.json schedule_weekday_a2.json schedule_weekday_b.json schedule_weekday_c.json schedule_saturday.json schedule_sunday.json tram_network.json collector"
+          set -f    # the patterns below are for git (they also catch new and removed files), not the shell
+          FILES="schedule_*.json tram_network.json calendar.json collector"
           git add -A -- $FILES      # stage first, so new files (collector/) count as changes
           if git diff --cached --quiet -- $FILES; then
             echo "The live timetable is already up to date. Nothing to do."
