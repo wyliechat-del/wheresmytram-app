@@ -1,1 +1,78 @@
+# WheresMyTram — automatic timetable updates (W2 Step 1)
+# Daily: download Transport Victoria's GTFS Schedule, rebuild the timetable files,
+# run the safety checks, and open (or refresh) a pull request only if the files changed.
+# Nothing reaches the live site until Drew merges the pull request.
 
+name: Timetable update
+
+on:
+  schedule:
+    - cron: '30 17 * * *'   # 04:30 Melbourne in daylight saving (03:30 in winter)
+  workflow_dispatch:
+    inputs:
+      allow_large_change:
+        description: 'Accept trip-count changes over 15% (only after reading the summary)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: timetable
+  cancel-in-progress: false
+
+env:
+  GTFS_URL: https://opendata.transport.vic.gov.au/dataset/3f4e292e-7f8a-4ffe-831f-1953be0fe448/resource/fb152201-859f-4882-9206-b768060b50ad/download/gtfs.zip
+  BRANCH: timetable/auto
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Download the GTFS Schedule
+        run: |
+          curl -fsSL --retry 3 --retry-delay 30 -o "$RUNNER_TEMP/gtfs.zip" "$GTFS_URL"
+          ls -l "$RUNNER_TEMP/gtfs.zip"
+
+      - name: Build the timetable files and run the checks
+        run: |
+          python3 tools/build_timetable.py --gtfs "$RUNNER_TEMP/gtfs.zip" --repo . \
+            --summary "$RUNNER_TEMP/summary.md" ${{ inputs.allow_large_change && '--allow-large-change' || '' }}
+
+      - name: Show the summary on this run's page
+        if: always()
+        run: cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - name: Open or refresh the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          FILES="schedule_weekday_a1.json schedule_weekday_a2.json schedule_weekday_b.json schedule_weekday_c.json schedule_saturday.json schedule_sunday.json tram_network.json"
+          if git diff --quiet -- $FILES; then
+            echo "The live timetable is already up to date. Nothing to do."
+            exit 0
+          fi
+          if git fetch -q origin "$BRANCH" 2>/dev/null && git diff --quiet "origin/$BRANCH" -- $FILES; then
+            echo "The open pull request already has exactly this build. Nothing to do."
+            exit 0
+          fi
+          RELEASE=$(sed -n 's/^## Timetable update: GTFS release //p' "$RUNNER_TEMP/summary.md" | head -1)
+          TITLE="Timetable update: GTFS release $RELEASE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -B "$BRANCH"
+          git add $FILES
+          git commit -q -m "$TITLE"
+          git push -q -f origin "$BRANCH"
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq length)" = "0" ]; then
+            gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/summary.md"
+          else
+            gh pr edit "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/summary.md"
+          fi
