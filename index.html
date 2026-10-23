@@ -47,7 +47,10 @@
     width: 28px; height: 28px; background: var(--accent);
     border-radius: 6px; display: flex; align-items: center; justify-content: center;
     font-size: 14px; font-weight: 600; color: #0b0f1a; flex-shrink: 0;
+    border: none; padding: 0; cursor: pointer; position: relative;
   }
+  /* The logo opens the About window; the tap area is 40 px though the logo stays 28 px. */
+  #topbar .logo-icon::before { content: ''; position: absolute; inset: -6px; }
   #topbar .logo-icon img { width: 72%; height: 72%; object-fit: contain; display: block; }
 
   /* Stop + location dots: plain markers so leaflet-rotate positions them */
@@ -133,8 +136,9 @@
     padding: 8px 8px 4px 14px; font-size: 13px; font-weight: 600;
   }
   #drawer-close {
-    width: 34px; height: 34px; border-radius: 8px; border: none; background: none;
-    color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer;
+    width: 48px; height: 48px; border-radius: 8px; border: none; background: none;
+    color: var(--muted); font-size: 38.5px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
   }
   #drawer-close:hover { color: var(--text); background: var(--surface2); }
   #drawer-body { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
@@ -146,34 +150,38 @@
 
   .route-item {
     display: flex; align-items: center; gap: 10px;
-    padding: 9px 14px; cursor: pointer; transition: background 0.15s;
+    padding: 8px 14px; cursor: default; transition: background 0.15s;
     border-left: 3px solid transparent;
   }
-  .route-item:hover { background: var(--surface2); }
   .route-item.active { background: var(--surface2); border-left-color: var(--color); }
   .route-item.dimmed { opacity: 1; }
 
   .route-num {
-    width: 32px; height: 20px; border-radius: 4px;
+    width: 40px; height: 26px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 600; font-family: var(--font-mono);
-    flex-shrink: 0; color: #fff;
+    font-size: 12px; font-weight: 600; font-family: var(--font-mono);
+    flex-shrink: 0; color: #fff; position: relative; cursor: pointer;
   }
+  /* Tap areas: as tall as the row (42 px), meeting halfway across the 10 px gap,
+     so neighbouring rows' areas never overlap. */
+  .route-num::before { content: ''; position: absolute; inset: -8px -5px; }
+  .route-toggle::before { content: ''; position: absolute; inset: -9px -5px; }
+  .route-num:hover, .route-toggle:hover { filter: brightness(1.15); }
   .route-name { font-size: 12px; color: var(--text); flex: 1; line-height: 1.3; }
 
   /* Toggle switch */
   .route-toggle {
-    flex-shrink: 0; width: 28px; height: 16px; border-radius: 8px;
+    flex-shrink: 0; width: 40px; height: 24px; border-radius: 12px;
     background: var(--muted); position: relative; transition: background 0.2s;
     cursor: pointer;
   }
   .route-toggle::after {
-    content: ''; position: absolute; top: 2px; left: 2px;
-    width: 12px; height: 12px; border-radius: 50%; background: #fff;
+    content: ''; position: absolute; top: 3px; left: 3px;
+    width: 18px; height: 18px; border-radius: 50%; background: #fff;
     transition: transform 0.2s;
   }
   .route-item:not(.dimmed) .route-toggle { background: var(--color); }
-  .route-item:not(.dimmed) .route-toggle::after { transform: translateX(12px); }
+  .route-item:not(.dimmed) .route-toggle::after { transform: translateX(16px); }
   .route-tram-count {
     font-size: 10px; font-family: var(--font-mono); color: var(--muted);
     background: var(--surface); border: 1px solid var(--border);
@@ -212,10 +220,13 @@
     box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-width: 80vw; text-align: center;
   }
   #info-close {
-    position: absolute; top: 8px; right: 12px;
+    position: absolute; top: 4px; right: 6px; width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
     background: none; border: none; color: var(--muted);
-    font-size: 18px; cursor: pointer; line-height: 1;
+    font-size: 31.5px; cursor: pointer; line-height: 1;
   }
+  /* Keep panel titles clear of the bigger ×. */
+  #info-content > :first-child, .info-close-x + div { padding-right: 40px; }
   .info-row { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
   .info-label { font-size: 10px; font-family: var(--font-mono); color: var(--muted); width: 70px; flex-shrink: 0; }
   .info-value { font-size: 13px; color: var(--text); }
@@ -237,27 +248,32 @@
 
   /* ── Leaflet overrides ── */
   .leaflet-container { background: #0d1220; }
-  /* ── Left-hand map buttons (W5 Slice B): North, zoom, my location ── */
+  /* ── Left-hand map buttons (W5 Slice B): North, zoom, my location ──
+     Moved up for one-handed use (24 Oct): the location button, lowest, is centred on
+     the screen's middle; 24 px from the edge; 50 px buttons (125%). The stack is
+     224 px tall, and on short screens (a phone on its side) it stops 12 px under the
+     top bar instead of riding up beneath it. */
   #map-ctl {
     position: absolute; z-index: 1000;
-    left: max(12px, env(safe-area-inset-left, 0px));
-    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    left: max(24px, env(safe-area-inset-left, 0px));
+    bottom: max(12px, min(calc(50vh - 25px), calc(100vh - var(--tb-h) - 236px)));
+    bottom: max(12px, min(calc(50dvh - 25px), calc(100dvh - var(--tb-h) - 236px)));
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
   }
   .ctl-btn {
-    width: 40px; height: 40px; border-radius: 10px; padding: 0;
+    width: 50px; height: 50px; border-radius: 12px; padding: 0;
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--text); font-size: 20px; line-height: 1; cursor: pointer;
+    color: var(--text); font-size: 25px; line-height: 1; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     box-shadow: 0 2px 8px rgba(0,0,0,0.4);
     transition: background 0.15s;
   }
   .ctl-btn:hover { background: var(--surface2); }
   .ctl-btn:disabled { color: var(--muted); opacity: 0.55; cursor: default; }
-  .zoom-pair { display: flex; flex-direction: column; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
-  .zoom-pair .ctl-btn { box-shadow: none; font-family: var(--font-mono); font-size: 22px; }
-  .zoom-pair .ctl-btn:first-child { border-radius: 10px 10px 0 0; border-bottom-color: rgba(255,255,255,0.12); }
-  .zoom-pair .ctl-btn:last-child { border-radius: 0 0 10px 10px; border-top: none; }
+  .zoom-pair { display: flex; flex-direction: column; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+  .zoom-pair .ctl-btn { box-shadow: none; font-family: var(--font-mono); font-size: 27.5px; }
+  .zoom-pair .ctl-btn:first-child { border-radius: 12px 12px 0 0; border-bottom-color: rgba(255,255,255,0.12); }
+  .zoom-pair .ctl-btn:last-child { border-radius: 0 0 12px 12px; border-top: none; }
   #locate-btn.locating { color: var(--accent); animation: pulse-btn 1s infinite; }
   #locate-btn.located { color: var(--accent); }
   @keyframes pulse-btn { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
@@ -325,11 +341,11 @@
   /* ── Compass / orient-north button ── */
   #compass-btn { border-radius: 50%; }
   #compass-rose {
-    font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+    font-family: var(--font-mono); font-weight: 600; font-size: 15px;
     line-height: 1; display: flex; flex-direction: column; align-items: center;
     transition: transform 0.25s ease;
   }
-  #compass-rose .tick { color: var(--red); font-size: 8px; margin-bottom: -2px; }
+  #compass-rose .tick { color: var(--red); font-size: 10px; margin-bottom: -2px; }
 
   /* ── Service alerts ── */
   #alerts-btn {
@@ -348,15 +364,52 @@
   }
   #alerts-panel.visible { display: block; }
   .info-close-x {
-    position: absolute; top: 8px; right: 12px; background: none; border: none;
-    color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1;
+    position: absolute; top: 4px; right: 6px; width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none;
+    color: var(--muted); font-size: 31.5px; cursor: pointer; line-height: 1;
+  }
+
+  /* ── About window (the logo button): heading, contact, legal notices ──
+     A floating card under the logo on wider screens; a bottom sheet on phones. */
+  #about-panel {
+    position: fixed; top: calc(var(--tb-h) + 8px); left: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px; font-size: 12px; line-height: 1.5;
+    z-index: 2000; width: 360px; max-width: calc(100vw - 24px);
+    max-height: calc(100vh - var(--tb-h) - 24px); overflow-y: auto; display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #about-panel.visible { display: block; }
+  #about-panel h2 { font-size: 17px; font-weight: 600; margin: 2px 40px 12px 0; }
+  #about-panel h3 {
+    margin: 14px 0 4px; font-size: 9px; font-weight: 500; letter-spacing: 1.2px;
+    text-transform: uppercase; color: #DCDCDC; font-family: var(--font-mono);
+  }
+  #about-panel p, #about-panel li { color: #b8c2d0; }
+  #about-panel p + p { margin-top: 6px; }
+  #about-panel ul { padding-left: 16px; }
+  #about-panel a { color: var(--accent); }
+  #about-contact {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 11px 12px; border-radius: 8px; font-size: 13px; color: var(--muted);
+    background: var(--surface2); border: 1px solid var(--border);
+  }
+  #about-contact .soon { font-family: var(--font-mono); font-size: 10px; }
+  .about-foot {
+    margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border);
+    font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+  }
+  #drawer-about {
+    margin-top: 6px; padding: 6px 0; background: none; border: none; cursor: pointer;
+    color: var(--accent); font-family: var(--font-mono); font-size: 12px; text-decoration: underline;
   }
   .route-item.has-alert .route-name::after { content: ' ⚠'; color: var(--amber); font-size: 11px; }
 
   /* ── Phones: the tram/stop panel and the alerts panel are bottom sheets (W5 Slice B).
      Tap closes one (as before); so does dragging it down. ── */
   @media (max-width: 640px) {
-    #info-panel, #alerts-panel {
+    #info-panel, #alerts-panel, #about-panel {
       top: auto; bottom: 0; left: 0; right: 0; transform: none;
       width: auto; min-width: 0; max-width: none;
       max-height: 55vh; max-height: 55dvh;
@@ -364,14 +417,16 @@
       padding: 20px 16px calc(14px + env(safe-area-inset-bottom, 0px));
       box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
     }
-    #info-panel.visible, #alerts-panel.visible { animation: sheet-up 0.18s ease-out; }
-    /* The left-hand buttons would peek out above a sheet; hide them while one is open. */
-    body:has(#info-panel.visible) #map-ctl, body:has(#alerts-panel.visible) #map-ctl { visibility: hidden; }
-    #info-panel::before, #alerts-panel::before {
+    #info-panel.visible, #alerts-panel.visible, #about-panel.visible { animation: sheet-up 0.18s ease-out; }
+    /* The left-hand buttons would sit under a sheet; hide them while one is open. */
+    body:has(#info-panel.visible) #map-ctl, body:has(#alerts-panel.visible) #map-ctl,
+    body:has(#about-panel.visible) #map-ctl { visibility: hidden; }
+    #info-panel::before, #alerts-panel::before, #about-panel::before {
       content: ''; position: absolute; top: 7px; left: 50%; width: 36px; height: 4px;
       margin-left: -18px; border-radius: 2px; background: rgba(255,255,255,0.22);
     }
   }
+  @media (max-width: 640px) { #about-panel { max-height: 85vh; max-height: 85dvh; } }
   @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
 </style>
 </head>
@@ -380,7 +435,7 @@
 <div id="app">
   <div id="topbar">
     <div class="logo">
-      <div class="logo-icon"><img src="data:image/png;base64,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" alt=""></div>
+      <button id="about-btn" class="logo-icon" type="button" title="About, legal and contact" aria-label="About Where's My Tram" aria-controls="about-panel" onclick="toggleAbout()"><img src="data:image/png;base64,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" alt=""></button>
       <div>
         <h1>WheresMyTram</h1>
       </div>
@@ -408,7 +463,7 @@
 </div>
 
 <div id="drawer-scrim" onclick="closeDrawer()"></div>
-<aside id="drawer" role="dialog" aria-label="Routes and settings" aria-hidden="true">
+<aside id="drawer" role="dialog" aria-label="Routes and settings" aria-hidden="true" onclick="onDrawerTap(event)">
   <div id="drawer-head"><span>Routes and settings</span><button id="drawer-close" aria-label="Close" onclick="closeDrawer()">×</button></div>
   <div id="drawer-body">
     <div class="sidebar-section">
@@ -430,9 +485,8 @@
     </div>
     <div id="route-list"></div>
     <div id="drawer-footer">
-      Data: Transport Victoria · CC BY 4.0<br>
       Live data every 10 s · <span id="last-updated">—</span><br>
-      <span id="app-version"></span>
+      <button id="drawer-about" type="button" onclick="openAbout()">About, legal and contact</button>
     </div>
   </div>
 </aside>
@@ -447,6 +501,35 @@
 
 <div id="alerts-panel" onclick="toggleAlertsPanel()"></div>
 
+<!-- About window (the logo button). Legal text is the brief's draft (W5, section 3)
+     plus two privacy lines; not legal advice: check it against the current PTV API
+     terms before the release. The map credit also stays on the map, as OpenStreetMap
+     requires. The contact form goes live with the Feedback slice (F). -->
+<div id="about-panel" role="dialog" aria-label="About Where's My Tram" onclick="closeAbout()">
+  <button class="info-close-x" aria-label="Close" onclick="event.stopPropagation(); closeAbout()">×</button>
+  <h2>Where's My Tram</h2>
+  <div id="about-contact" title="Arrives with the Feedback release">Contact form <span class="soon">coming soon</span></div>
+  <h3>Data</h3>
+  <p>Timetable and real-time data from Transport Victoria (Department of Transport and Planning), licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener" onclick="event.stopPropagation()">CC BY 4.0</a>.</p>
+  <p>Source: Licensed from Public Transport Victoria under a Creative Commons Attribution 4.0 International Licence.</p>
+  <h3>Independence</h3>
+  <p>Where's My Tram is independent and not affiliated with or endorsed by Public Transport Victoria or the Victorian Government.</p>
+  <h3>Accuracy</h3>
+  <p>Tram positions and times are estimates and may be wrong. Check official sources for important journeys. Provided as is, without warranty.</p>
+  <h3>Privacy</h3>
+  <ul>
+    <li>No accounts, no cookies, no tracking IDs.</li>
+    <li>Your location is used on your device only and is never sent.</li>
+    <li>Your map style and route choices are saved in this browser only.</li>
+    <li>We count anonymous taps (which stops and routes are viewed, by hour) to improve the app.</li>
+    <li>Page visits are counted with Cloudflare Web Analytics, which uses no cookies.</li>
+    <li>Map tiles come from CARTO, fonts from Google Fonts and the map software from unpkg; like any website, they see your IP address.</li>
+  </ul>
+  <h3>Map</h3>
+  <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" onclick="event.stopPropagation()">OpenStreetMap contributors</a>. Map tiles © CARTO. Map software: Leaflet.</p>
+  <div class="about-foot">© 2026 Pandemonium Creative<br><span id="app-version"></span></div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
 <script>
@@ -455,7 +538,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.23-b';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-b2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -2894,7 +2977,11 @@ function buildSidebar() {
         <div class="route-name">${def.name}</div>
         <div class="route-tram-count" id="rc-${id}">0</div>
       `;
-      item.addEventListener('click', () => { if (!activeRoutes.has(id)) wmtBeacon('route_toggle', id); toggleRoute(id); });
+      // Only the switch and the route-number square toggle the route; a tap anywhere
+      // else in the drawer, the route name included, closes it (onDrawerTap).
+      const flip = e => { e.stopPropagation(); if (!activeRoutes.has(id)) wmtBeacon('route_toggle', id); toggleRoute(id); };
+      item.querySelector('.route-toggle').addEventListener('click', flip);
+      item.querySelector('.route-num').addEventListener('click', flip);
       list.appendChild(item);
     });
   });
@@ -3115,6 +3202,7 @@ function setStatus(state, text) {
 // scrim is light, so the map stays visible while routes are switched on and off.
 function openDrawer() {
   document.getElementById('alerts-panel')?.classList.remove('visible');
+  closeAbout();
   processVehicles();   // fresh per-route counts now, not at the next feed fetch (it reads only scheduleTrams)
   const d = document.getElementById('drawer');
   d.classList.add('open'); d.setAttribute('aria-hidden', 'false');
@@ -3131,6 +3219,29 @@ function closeDrawer() {
 function toggleDrawer() {
   if (document.getElementById('drawer').classList.contains('open')) closeDrawer();
   else openDrawer();
+}
+// Like the sheets, the drawer closes on a tap anywhere in it, except on its controls:
+// the switches and route-number squares toggle a route, and buttons and links do their
+// own thing (Dark/Light and All On/Off keep it open; Nearby routes closes it).
+function onDrawerTap(e) {
+  const t = e.target;
+  if (t && t.closest && t.closest('button, a, input, label, .route-toggle, .route-num')) return;
+  closeDrawer();
+}
+
+// The About window: heading, contact form and the legal notices. Opened from the logo
+// and from the drawer's footer link; one panel at a time, like the others.
+function openAbout() {
+  closeInfo(); closeDrawer();
+  document.getElementById('alerts-panel')?.classList.remove('visible');
+  document.getElementById('about-panel').classList.add('visible');
+}
+function closeAbout() {
+  document.getElementById('about-panel')?.classList.remove('visible');
+}
+function toggleAbout() {
+  if (document.getElementById('about-panel').classList.contains('visible')) closeAbout();
+  else openAbout();
 }
 
 // +/− step whole levels and grey out at the map's limits. Pinch, double-tap and
@@ -3150,6 +3261,7 @@ function updateZoomButtons() {
 // only one is open at a time.
 function openInfoPanel() {
   document.getElementById('alerts-panel')?.classList.remove('visible');
+  closeAbout();
   document.getElementById('info-panel').classList.add('visible');
 }
 
@@ -3187,7 +3299,7 @@ function isSheetLayout() {
 }
 function initSheets() {
   const closeAlerts = () => document.getElementById('alerts-panel').classList.remove('visible');
-  [['info-panel', closeInfo], ['alerts-panel', closeAlerts]].forEach(([id, close]) => {
+  [['info-panel', closeInfo], ['alerts-panel', closeAlerts], ['about-panel', closeAbout]].forEach(([id, close]) => {
     const el = document.getElementById(id);
     if (!el) return;
     let y0 = null, dy = 0;
@@ -3215,8 +3327,10 @@ function initSheets() {
 function onKeyDown(e) {
   if (e.key !== 'Escape') return;
   const ap = document.getElementById('alerts-panel');
+  const ab = document.getElementById('about-panel');
   if (document.getElementById('drawer').classList.contains('open')) closeDrawer();
   else if (ap && ap.classList.contains('visible')) ap.classList.remove('visible');
+  else if (ab && ab.classList.contains('visible')) closeAbout();
   else closeInfo();
 }
 
@@ -3378,7 +3492,7 @@ function toggleAlertsPanel() {
     });
   }
   p.innerHTML = html;
-  closeInfo(); closeDrawer();   // one panel at a time: they share the bottom of a phone screen
+  closeInfo(); closeDrawer(); closeAbout();   // one panel at a time: they share the bottom of a phone screen
   p.classList.add('visible');
 }
 
