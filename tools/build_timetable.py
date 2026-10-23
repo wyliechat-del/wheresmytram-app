@@ -4,7 +4,8 @@
 Builds the viewer's timetable files from Transport Victoria's GTFS Schedule:
   schedule_weekday_a1/a2/b/c.json, schedule_saturday.json, schedule_sunday.json,
   tram_network.json
-in exactly the format the viewer already reads (see claude/w2-design.md, section 1.7).
+in exactly the format the viewer already reads (see claude/w2-design.md, section 1.7),
+plus the collector's data under collector/ (W2 Step 2, see tools/collector_data.py).
 
 Which trips go in: for each weekday (Mon..Sun), the services running on its next
 REGULAR date on or after the build date. A date is regular when no service is
@@ -18,10 +19,12 @@ Usage (the GitHub Action runs this):
   --date   build date YYYYMMDD (default: today in Melbourne)
   --allow-large-change   accept per-route trip-count changes over 15%
   --line-distances       measure stop distances along the route line (Step 1b)
-Exit code 0 = files written; 1 = a check failed and nothing was written.
+Exit code 0 = files written (viewer files + collector/); 1 = a check failed and nothing was written.
 Standard library only.
 """
 import argparse, csv, datetime as dt, hashlib, io, json, math, os, re, sys, zipfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import collector_data
 from collections import Counter, defaultdict
 
 SCHEDULE_FILES = ['schedule_weekday_a1.json', 'schedule_weekday_a2.json', 'schedule_weekday_b.json',
@@ -37,6 +40,7 @@ WEEKEND_ORDER = ['109', '11', '12', '1', '16', '19', '30', '3', '35', '48', '5',
                  '6', '64', '67', '70', '72', '75', '78', '82', '86', '96']
 TRAM_FOLDER = '3/google_transit.zip'
 MAX_FILE_BYTES = 20 * 1024 * 1024
+MAX_COLLECTOR_FILE_BYTES = 1024 * 1024   # the collector parses these inside its 10 ms budget
 COUNT_TOLERANCE = 0.15
 COVER_DAYS = 14
 ONE_OFF_MAX_DATES = 2
@@ -613,6 +617,26 @@ def check_and_summarise(files, info, repo, allow_large):
         fp.update(f.encode() + b'\0' + blobs[f] + b'\0')
     fingerprint = fp.hexdigest()[:12]
 
+    # collector data (W2 Step 2), baked from exactly the bytes the site will serve
+    coll = {}
+    try:
+        parsed = {f: json.loads(blobs[f].decode('utf-8')) for f in SCHEDULE_FILES}
+        coll = collector_data.collector_files(parsed, fingerprint, info['release'])
+    except Exception as e:
+        errors.append('collector data could not be built: %s' % e)
+    for n, b in coll.items():
+        if len(b) > MAX_COLLECTOR_FILE_BYTES:
+            errors.append('collector/%s is %d KB (limit %d KB)' % (n, len(b) // 1024, MAX_COLLECTOR_FILE_BYTES // 1024))
+    coll_line = ''
+    if coll:
+        pair = [len(b) for n, b in coll.items() if n.startswith('pair-')]
+        sched = [len(b) for n, b in coll.items() if n.startswith('sched-')]
+        coll_line = ('- **Collector data:** %d files: manifest %d KB, start-time indexes %d-%d KB, '
+                     '%d route pairing files %d-%d KB.' % (len(coll), len(coll['manifest.json']) // 1024,
+                     min(sched) // 1024, max(sched) // 1024, len(pair), min(pair) // 1024, max(pair) // 1024))
+    for n, b in coll.items():
+        blobs['collector/' + n] = b
+
     L = []
     L.append('## Timetable update: GTFS release %s' % info['release'])
     L.append('')
@@ -623,8 +647,10 @@ def check_and_summarise(files, info, repo, allow_large):
         L.append('- **Line distances (Step 1b):** %d trips measured along the route line; %d left as they were (they leave the line).'
                  % (info['rebased'], info['left_off_line']))
     L.append('- **Output fingerprint:** `%s`' % fingerprint)
+    if coll_line:
+        L.append(coll_line)
     L.append('')
-    L.append('> **Until W2 Step 2 ships, merging needs a matching collector update. Ask Claude before you merge.**')
+    L.append('> Merging updates the map and the collector together: collector W1.6 and later read `collector/` from the site.')
     L.append('')
     L.append('### Checks')
     if errors:
@@ -704,7 +730,9 @@ def main(argv=None):
     out = a.out or a.repo
     os.makedirs(out, exist_ok=True)
     for f, b in blobs.items():
-        with open(os.path.join(out, f), 'wb') as fh:
+        path = os.path.join(out, f)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as fh:
             fh.write(b)
     print('Wrote %d files to %s (fingerprint %s).' % (len(blobs), out, fp))
     return 0
