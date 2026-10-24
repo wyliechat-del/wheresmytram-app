@@ -305,7 +305,7 @@
   .tram-icon-outer.ptv-ghost { filter: drop-shadow(0 0 4px rgba(0,229,255,0.7)); }
   .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
-  /* ── W5 Slice C: City and Network tiers ──
+  /* ── W5 Slice C: City tier (Network shows no trams since Slice D) ──
      Every tram shrinks to an 8 px dot in its route colour, with no arrow and no
      number; a GPS reading shows as a red outline. The 41 px tap area stays. The
      circle is scaled about its own centre (0.3162 of an icon drawn 15% large, so
@@ -317,6 +317,11 @@
     transform-box: fill-box; transform-origin: center; transform: scale(0.3162); stroke-width: 4.1;
   }
   #map.trams-compact .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 5.5; }
+  /* Network tier (Drew, 24 Oct): no trams at all, just the route lines and their end squares. */
+  #map.trams-hidden .tram-icon-outer { display: none; }
+  /* Drawer, location mode: the route choices are for this visit only. */
+  #route-session-note { display: none; padding: 0 14px 8px; font-size: 11px; line-height: 1.4; color: var(--muted); }
+  #route-session-note.on { display: block; }
   #map.trams-compact .tram-icon-outer { filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
 
   /* Neighbourhood tier: one dot per stop, both platforms merged. The 24 px icon is
@@ -517,6 +522,7 @@
     </div>
     <div class="sidebar-section">
       <div class="sidebar-section-label">Routes</div>
+      <div id="route-session-note">Showing the routes near you. Changes here last for this visit only.</div>
       <div style="display:flex;gap:6px;padding:0 14px 8px;">
         <button class="all-btn" onclick="setAllRoutes(true)">All On</button>
         <button class="all-btn" onclick="setAllRoutes(false)">All Off</button>
@@ -580,7 +586,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-c2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-d';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -633,7 +639,11 @@ function loadSavedRoutes() {
   } catch(e) {}
   return new Set(Object.keys(ROUTE_DEFS));
 }
+// W5 Slice D: in location mode the routes are chosen from where you are, and any
+// changes last for this visit only; the saved set stays the one network view uses.
+let ROUTES_SESSION_ONLY = false;
 function saveRoutes() {
+  if (ROUTES_SESSION_ONLY) return;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...activeRoutes])); } catch(e) {}
 }
 
@@ -1735,8 +1745,8 @@ function applyMarkerRotation(iconEl, degrees) {
 }
 function initMap() {
   map = L.map('map', {
-    center: [-37.814, 144.963],
-    zoom: 13,
+    center: OPEN_CBD,      // W5 Slice D: openNetworkView() sets the real opening view
+    zoom: OPEN_MIN_ZOOM,
     zoomControl: false,    // W5 Slice B: our own +/− sit in the left-hand stack
     // W5 Slice C (W5-11): zoom is free; pinch and the wheel rest on quarter levels,
     // +/− still step whole levels. 9 shows the whole metro area; 19 is the tile limit.
@@ -1790,6 +1800,7 @@ function initMap() {
   }
   map.on('zoomend', updateZoomButtons);
   updateZoomButtons();
+  openNetworkView();
   map.on('moveend', refreshView);          // zoomend always comes just before it
   map.on('rotate', scheduleRefreshView);   // a turn changes what's on screen too
   refreshView();
@@ -1803,10 +1814,14 @@ function initMap() {
 let locationMarker = null, accuracyCircle = null;
 let userLoc = null;   // {lat, lng} from the last geolocate fix
 
-function locateMe(onFix) {
+// opts.auto (W5 Slice D, the opening screen): no alert, no beacon, no zoom (the caller
+// decides), and a fix up to a minute old will do. opts.onFail(code) on any failure.
+function locateMe(onFix, opts) {
+  opts = opts || {};
   const btn = document.getElementById('locate-btn');
   if (!navigator.geolocation) {
-    alert('Geolocation is not supported by your browser.');
+    if (!opts.auto) alert('Geolocation is not supported by your browser.');
+    if (typeof opts.onFail === 'function') opts.onFail('unsupported');
     return;
   }
   btn.classList.add('locating');
@@ -1814,7 +1829,8 @@ function locateMe(onFix) {
 
   navigator.geolocation.getCurrentPosition(
     pos => {
-      wmtBeacon('geolocate');
+      if (!opts.auto) wmtBeacon('geolocate');   // counts taps on the button, not the opening fix
+      try { localStorage.setItem(LOC_USED_KEY, '1'); } catch (e) {}   // open in location mode next time
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
       const acc = pos.coords.accuracy;
@@ -1838,7 +1854,7 @@ function locateMe(onFix) {
       }).addTo(map).bindTooltip('You are here', { permanent: false });
 
       // Centre and zoom map
-      map.setView([lat, lng], 16, { animate: true });
+      if (!opts.auto) map.setView([lat, lng], 16, { animate: true });
 
       btn.classList.remove('locating');
       btn.classList.add('located');
@@ -1849,9 +1865,10 @@ function locateMe(onFix) {
       btn.classList.remove('locating');
       let msg = 'Could not get your location.';
       if (err.code === 1) msg = 'Location access denied. Please enable it in your browser settings.';
-      alert(msg);
+      if (!opts.auto) alert(msg);
+      if (typeof opts.onFail === 'function') opts.onFail(err && err.code);
     },
-    { enableHighAccuracy: true, timeout: 10000 }
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: opts.auto ? 60000 : 0 }
   );
 }
 
@@ -1866,30 +1883,92 @@ function showNotice(msg) {
 // the user's location. No fix yet → run the geolocate flow first, then filter.
 // Nothing nearby → tell the user and restore all routes.
 
+// "Nearby routes" (drawer): find you, zoom to street level and switch on the routes
+// near you, by the same rule as the opening screen, for this visit only.
 function nearbyStops() {
-  if (!userLoc) { locateMe(nearbyStops); return; }
-  if (!TRAM_NETWORK) return;
-  // Radiating search: start at 350m, grow by 50m until >=2 routes appear,
-  // capped at 3km (outer-suburb stops can be 600-800m from any point).
-  const start = 350;
-  let known = [];
-  for (let radius = start; radius <= 3000; radius += 50) {
-    const found = new Set();
-    Object.values(TRAM_NETWORK.stops).forEach(s => {
-      if (metresBetween(userLoc.lat, userLoc.lng, s.lat, s.lng) <= radius) {
-        (s.r || []).forEach(r => found.add(r));
+  locateMe(() => {
+    NETWORK_READY.then(() => { if (!applyNearbyRoutes()) showNotice('Sorry, no trams are nearby'); });
+  });
+}
+
+// ── W5 Slice D: the opening screen (design section 4) ─────────────────────────
+// Location mode when the browser says location is already allowed, or this device has
+// used location in the app before (Safari often answers "prompt" even then): zoom 16 on
+// you, with the routes near you switched on, for this visit only. Otherwise (and if the
+// fix fails, or no stop is within 3 km) the network view with the saved routes. A
+// first visit never triggers the permission prompt.
+const LOC_USED_KEY = 'wmt_location_used';
+const NEAR_MAX_M = 3000;
+// The network view: every route's line fitted to the screen, but never further out than
+// OPEN_MIN_ZOOM, where it centres on the CBD instead. The Network tier draws no trams,
+// so a first visit would otherwise open on a map with none. Set it to 9 to open on the
+// whole network.
+const NETWORK_BOUNDS = [[-37.9142, 144.8780], [-37.6791, 145.1821]];   // 26.7 x 26.1 km
+const OPEN_CBD = [-37.8136, 144.9631];
+const OPEN_MIN_ZOOM = 12;
+let networkReady = null;
+const NETWORK_READY = new Promise(r => { networkReady = r; });   // stops placed, routes known
+
+function openNetworkView() {
+  map.fitBounds(NETWORK_BOUNDS, { animate: false, padding: [12, 12] });
+  if (map.getZoom() < OPEN_MIN_ZOOM) map.setView(OPEN_CBD, OPEN_MIN_ZOOM, { animate: false });
+}
+
+async function chooseOpening() {
+  let permission = 'unknown', usedBefore = false;
+  try {
+    if (navigator.permissions && navigator.permissions.query)
+      permission = (await navigator.permissions.query({ name: 'geolocation' })).state;
+  } catch (e) {}
+  try { usedBefore = localStorage.getItem(LOC_USED_KEY) === '1'; } catch (e) {}
+  const open = window.WMT_DEBUG.open = { mode: 'network', permission: permission, usedBefore: usedBefore };
+  if (!navigator.geolocation) return;
+  if (!(permission === 'granted' || (permission !== 'denied' && usedBefore))) return;
+  open.mode = 'locating';
+  locateMe(() => {
+    NETWORK_READY.then(() => {
+      if (applyNearbyRoutes()) {
+        open.mode = 'location';
+        map.setView([userLoc.lat, userLoc.lng], 16, { animate: false });
+      } else {
+        open.mode = 'network (no stop within 3 km)';
       }
     });
-    known = [...found].filter(r => ROUTE_DEFS[r]);
-    if (known.length >= 2) break;   // keep expanding until at least two routes appear
-  }
-  if (!known.length) {
-    setAllRoutes(true);
-    showNotice('Sorry, no trams are nearby');
-    return;
-  }
-  setAllRoutes(false);
-  known.forEach(r => { if (!activeRoutes.has(r)) toggleRoute(r); });
+  }, { auto: true, onFail: code => { open.mode = 'network (no fix: ' + code + ')'; } });
+}
+
+// The routes serving your nearest stop (both its platforms), topped up from the next
+// nearest stops until there are at least two. Only stops within 3 km count.
+function nearbyRouteSet(lat, lng) {
+  if (!TRAM_NETWORK) return null;
+  const list = [];
+  Object.entries(TRAM_NETWORK.stops).forEach(([sid, st]) => {
+    if (!st.r || !st.r.some(r => ROUTE_DEFS[r])) return;
+    const d = metresBetween(lat, lng, st.lat, st.lng);
+    if (d <= NEAR_MAX_M) list.push({ sid: sid, d: d });
+  });
+  if (!list.length) return null;
+  list.sort((a, b) => a.d - b.d);
+  const set = new Set();
+  const add = sid => [sid, STOP_PARTNER[sid]].forEach(x => {
+    const st = x && TRAM_NETWORK.stops[x];
+    if (st && st.r) st.r.forEach(r => { if (ROUTE_DEFS[r]) set.add(r); });
+  });
+  add(list[0].sid);
+  for (let i = 1; i < list.length && set.size < 2; i++) add(list[i].sid);
+  return { routes: set, nearest: list[0].sid, metres: Math.round(list[0].d) };
+}
+// Switch the map to exactly the routes near you, for this visit only. False (and
+// nothing changed) when no stop is within 3 km.
+function applyNearbyRoutes() {
+  if (!userLoc) return false;
+  const near = nearbyRouteSet(userLoc.lat, userLoc.lng);
+  if (!near) return false;
+  ROUTES_SESSION_ONLY = true;
+  document.getElementById('route-session-note')?.classList.add('on');
+  Object.keys(ROUTE_DEFS).forEach(id => { if (near.routes.has(id) !== activeRoutes.has(id)) toggleRoute(id); });
+  window.WMT_DEBUG.near = { stop: near.nearest, metres: near.metres, routes: [...near.routes] };
+  return true;
 }
 
 // A stop genuinely served by a route appears on 18-98% of its trips; across the
@@ -2156,6 +2235,8 @@ function tickSchedule() {
   });
 
   updateTramCount();
+  // W5 Slice D: the drawer's per-route counts follow route switches within a second
+  if (document.getElementById('drawer')?.classList.contains('open')) processVehicles();
 
   // Live-refresh the stop arrivals panel so the minutes count down
   if (selectedStop !== null && cs - lastStopPanelRender >= 15) {
@@ -2255,6 +2336,7 @@ async function loadAndDrawRoutes() {
     snapStopsToShapes();              // then sit every dot on its route's drawn line
     try { buildStopDots(); } catch (e) { console.warn('Merged stop dots failed:', e); }
     updateStopVisibility();
+    networkReady();
   } catch(e) {
     console.warn('Could not load tram_network.json:', e);
   }
@@ -2386,7 +2468,7 @@ const ZOOM_TIERS = [
   { name: 'street',        min: 16,        stops: 'tabs', trams: 'full'    },
   { name: 'neighbourhood', min: 14,        stops: 'dots', trams: 'full'    },
   { name: 'city',          min: 12,        stops: 'none', trams: 'compact' },
-  { name: 'network',       min: -Infinity, stops: 'none', trams: 'compact' },
+  { name: 'network',       min: -Infinity, stops: 'none', trams: 'none'    },   // Drew, 24 Oct
 ];
 const TIER_HYST = 0.25;
 const STOP_VIEW_PAD = 0.5;   // stops drawn for the screen plus half a screen each way
@@ -2407,6 +2489,7 @@ function refreshView() {
   TIER = pickTier(z, TIER);
   const tier = ZOOM_TIERS[TIER];
   map.getContainer().classList.toggle('trams-compact', tier.trams === 'compact');
+  map.getContainer().classList.toggle('trams-hidden', tier.trams === 'none');
   updateStopVisibility();
   updateRouteEnds();
   window.WMT_DEBUG.zoom = { zoom: z, tier: tier.name };
@@ -2615,7 +2698,7 @@ function updateRouteEnds() {
   live.sort((a, b) => b.cbdM - a.cbdM);
   const boxes = [];
   let hidden = 0, nudged = 0, blocked = 0;
-  const clear = (TIER >= 0 && ZOOM_TIERS[TIER].trams === 'compact') ? END_CLEAR_COMPACT_PX : END_CLEAR_PX;
+  const clear = (TIER >= 0 && ZOOM_TIERS[TIER].trams !== 'full') ? END_CLEAR_COMPACT_PX : END_CLEAR_PX;
   const obst = endObstacles();
   live.forEach(s => {
     // Screen heading of the line at this end (follows zoom and map bearing): project
@@ -3497,7 +3580,8 @@ function processVehicles(vehicles) {
   // Update the vehicle count display
   const counts = {};
   Object.values(scheduleTrams).forEach(t => {
-    counts[t.routeId] = (counts[t.routeId] || 0) + 1;
+    // W5 Slice D: a route switched off counts 0 at once (its trams leave at the next tick)
+    if (activeRoutes.has(t.routeId)) counts[t.routeId] = (counts[t.routeId] || 0) + 1;
   });
   Object.keys(ROUTE_DEFS).forEach(id => {
     const el = document.getElementById('rc-' + id);
@@ -3863,6 +3947,7 @@ function checkScheduleDay() {
 window.addEventListener('DOMContentLoaded', () => {
   loadConfig().then(() => console.log('[WMT] config:', window.WMT_DEBUG.config));   // fire-and-forget; baked defaults until/if it resolves
   initMap();
+  chooseOpening();   // W5 Slice D: location mode or the network view (async; never prompts on a first visit)
   buildSidebar();
   initSheets();
   document.addEventListener('keydown', onKeyDown);
