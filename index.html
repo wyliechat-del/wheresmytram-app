@@ -460,6 +460,59 @@
     margin-top: 6px; padding: 6px 0; background: none; border: none; cursor: pointer;
     color: var(--accent); font-family: var(--font-mono); font-size: 12px; text-decoration: underline;
   }
+  /* ── Feedback (W5 Slice F2): a sheet on phones, a card above the bottom edge on wider
+     screens. Unlike the other panels a tap inside doesn't close it (it holds a form). ── */
+  #about-feedback {
+    width: 100%; padding: 11px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-ui); text-align: left;
+  }
+  #about-feedback:hover { background: rgba(255,255,255,0.08); }
+  #feedback-panel {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px; font-size: 13px; line-height: 1.45;
+    z-index: 2000; width: 380px; max-width: calc(100vw - 24px);
+    max-height: calc(100vh - var(--tb-h) - 40px); overflow-y: auto; display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #feedback-panel.visible { display: block; }
+  #feedback-panel h2 { font-size: 17px; font-weight: 600; margin: 2px 40px 10px 0; }
+  #fb-about {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 6px 4px 6px 10px;
+    border-radius: 8px; background: var(--surface2); border: 1px solid var(--border);
+    font-size: 12px; color: #b8c2d0;
+  }
+  #fb-about span { flex: 1; min-width: 0; }
+  #fb-about button, #fb-preview button {
+    flex: none; width: 32px; height: 32px; border: none; background: none; cursor: pointer;
+    color: var(--muted); font-size: 20px; line-height: 1;
+  }
+  #fb-about[hidden], #fb-preview[hidden], #fb-attach[hidden] { display: none; }
+  #fb-msg {
+    width: 100%; box-sizing: border-box; min-height: 110px; resize: vertical; padding: 10px;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    font-family: var(--font-ui); font-size: 16px; line-height: 1.4;   /* 16 px: iOS doesn't zoom in on focus */
+  }
+  #fb-msg:focus { outline: none; border-color: var(--accent); }
+  #fb-count { display: block; text-align: right; font-family: var(--font-mono); font-size: 10px; color: var(--muted); margin: 3px 0 8px; }
+  #fb-attach { padding: 8px 12px; flex: none; }
+  #fb-preview { display: flex; align-items: center; gap: 8px; }
+  #fb-preview img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+  #fb-preview span { flex: 1; font-size: 12px; color: #b8c2d0; }
+  #fb-check { margin: 10px 0 0; }
+  #fb-check-note, #fb-status { font-size: 11px; color: var(--muted); margin-top: 6px; min-height: 0; }
+  #fb-status.bad { color: var(--red); }
+  #fb-send {
+    width: 100%; margin-top: 10px; padding: 11px 0; border-radius: 8px; font-size: 14px; font-weight: 600;
+    font-family: var(--font-ui); cursor: pointer; border: none; background: var(--accent); color: #04121c;
+  }
+  #fb-send:disabled { opacity: 0.4; cursor: default; }
+  .fb-note { margin-top: 10px; font-size: 11px; color: var(--muted); }
+  .fb-link {
+    display: block; margin-top: 8px; padding: 6px 0; background: none; border: none; cursor: pointer;
+    color: var(--accent); font-family: var(--font-mono); font-size: 11px; text-decoration: underline;
+  }
   .route-item.has-alert .route-name::after { content: ' ⚠'; color: var(--amber); font-size: 11px; }
 
   /* ── Phones: the tram/stop panel and the alerts panel are bottom sheets (W5 Slice B).
@@ -483,6 +536,20 @@
     }
   }
   @media (max-width: 640px) { #about-panel { max-height: 85vh; max-height: 85dvh; } }
+  @media (max-width: 640px) {
+    #feedback-panel {
+      top: auto; bottom: 0; left: 0; right: 0; transform: none; width: auto; max-width: none;
+      max-height: 85vh; max-height: 85dvh; border-radius: 16px 16px 0 0; border-bottom: none;
+      padding: 20px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+      box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
+    }
+    #feedback-panel.visible { animation: sheet-up 0.18s ease-out; }
+    body:has(#feedback-panel.visible) #map-ctl { visibility: hidden; }
+    #feedback-panel::before {
+      content: ''; position: absolute; top: 7px; left: 50%; width: 36px; height: 4px;
+      margin-left: -18px; border-radius: 2px; background: rgba(255,255,255,0.22);
+    }
+  }
   @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
 </style>
 </head>
@@ -565,11 +632,11 @@
 <!-- About window (the logo button). Legal text is the brief's draft (W5, section 3)
      plus two privacy lines; not legal advice: check it against the current PTV API
      terms before the release. The map credit also stays on the map, as OpenStreetMap
-     requires. The contact form goes live with the Feedback slice (F). -->
+     requires. "Send feedback" opens the feedback sheet (W5 Slice F2). -->
 <div id="about-panel" role="dialog" aria-label="About Where's My Tram" onclick="closeAbout()">
   <button class="info-close-x" aria-label="Close" onclick="event.stopPropagation(); closeAbout()">×</button>
   <h2>Where's My Tram</h2>
-  <div id="about-contact" title="Arrives with the Feedback release">Contact form <span class="soon">coming soon</span></div>
+  <button id="about-feedback" type="button" onclick="event.stopPropagation(); openFeedback(null)">Send feedback or report a problem</button>
   <h3>Data</h3>
   <p>Timetable and real-time data from Transport Victoria (Department of Transport and Planning), licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener" onclick="event.stopPropagation()">CC BY 4.0</a>.</p>
   <p>Source: Licensed from Public Transport Victoria under a Creative Commons Attribution 4.0 International Licence.</p>
@@ -585,10 +652,31 @@
     <li>We count anonymous taps (which stops and routes are viewed, by hour) to improve the app.</li>
     <li>Page visits are counted with Cloudflare Web Analytics, which uses no cookies.</li>
     <li>Map tiles come from CARTO, fonts from Google Fonts and the map software from unpkg; like any website, they see your IP address.</li>
+    <li>Feedback is anonymous. It carries your message, a screenshot if you add one (shrunk, with its location data removed), the app version, browser type, screen size and map view, and the route or stop it's about. Never your location.</li>
+    <li>The feedback form uses Cloudflare Turnstile to check it's sent by a person. It loads only when you open the form.</li>
   </ul>
   <h3>Map</h3>
   <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" onclick="event.stopPropagation()">OpenStreetMap contributors</a>. Map tiles © CARTO. Map software: Leaflet.</p>
   <div class="about-foot">© 2026 Pandemonium Creative<br><span id="app-version"></span></div>
+</div>
+
+<!-- Feedback (W5 Slice F2): sent anonymously to the collector's POST /feedback. -->
+<div id="feedback-panel" role="dialog" aria-label="Send feedback">
+  <button class="info-close-x" aria-label="Close" onclick="closeFeedback()">×</button>
+  <h2>Send feedback</h2>
+  <div id="fb-about" hidden></div>
+  <textarea id="fb-msg" maxlength="500" rows="5" aria-label="Your message"
+    placeholder="What's wrong, or what would make the app better?" oninput="updateFeedbackSend()"></textarea>
+  <span id="fb-count">0 / 500</span>
+  <button id="fb-attach" class="all-btn" type="button" onclick="document.getElementById('fb-file').click()">Attach screenshot</button>
+  <input id="fb-file" type="file" accept="image/*" hidden onchange="onFeedbackFile(this)">
+  <div id="fb-preview" hidden><img id="fb-thumb" alt="Screenshot to send"><span>Screenshot attached</span>
+    <button type="button" aria-label="Remove the screenshot" onclick="removeFeedbackShot()">×</button></div>
+  <div id="fb-check"></div>
+  <div id="fb-check-note"></div>
+  <div id="fb-status" role="alert"></div>
+  <button id="fb-send" type="button" disabled onclick="sendFeedback()">Send</button>
+  <p class="fb-note">Anonymous: no name, email or location is sent, and there are no replies.</p>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -599,7 +687,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-e3';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-f2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -2294,8 +2382,13 @@ function showScheduleInfo(tramId, refresh) {
     '<div class="info-row"><span class="info-label">Source</span><span class="info-value" id="wmt-source" style="font-family:var(--font-mono);font-size:11px;">' +
       escapeHtml(tramSourceText(kind, usePtv)) + '</span></div>' +
     '<div class="info-row"><span class="info-label">Running</span>' + running + '</div>' +
-    field;
+    field + feedbackLinkHtml();
 
+  INFO_FEEDBACK_CTX = { from: 'tram', route: t.routeId, dir: t.trip.dir, tram: veh ? veh.id : undefined,
+    stop: nextStopIdx >= 0 ? String(t.trip.stops[nextStopIdx][0]) : undefined,
+    label: 'Route ' + t.routeId + ' ' + dirLabel + (nextStopIdx >= 0 ? ', next stop ' +
+      ((TRAM_NETWORK.stops[String(t.trip.stops[nextStopIdx][0])] || {}).n || t.trip.stops[nextStopIdx][0]) : '') +
+      (veh ? ' (tram ' + veh.id + ')' : '') };   // W5 Slice F2
   openInfoPanel();
   lastTramPanelRender = cs;
   if (opening && Number.isFinite(d.lat) && Number.isFinite(d.lng)) panToVisible([d.lat, d.lng]);
@@ -3653,7 +3746,7 @@ function setStatus(state, text) {
 // scrim is light, so the map stays visible while routes are switched on and off.
 function openDrawer() {
   document.getElementById('alerts-panel')?.classList.remove('visible');
-  closeAbout();
+  closeAbout(); closeFeedback();
   processVehicles();   // fresh per-route counts now, not at the next feed fetch (it reads only scheduleTrams)
   const d = document.getElementById('drawer');
   d.classList.add('open'); d.setAttribute('aria-hidden', 'false');
@@ -3683,7 +3776,7 @@ function onDrawerTap(e) {
 // The About window: heading, contact form and the legal notices. Opened from the logo
 // and from the drawer's footer link; one panel at a time, like the others.
 function openAbout() {
-  closeInfo(); closeDrawer();
+  closeInfo(); closeDrawer(); closeFeedback();
   document.getElementById('alerts-panel')?.classList.remove('visible');
   document.getElementById('about-panel').classList.add('visible');
 }
@@ -3694,6 +3787,216 @@ function toggleAbout() {
   if (document.getElementById('about-panel').classList.contains('visible')) closeAbout();
   else openAbout();
 }
+
+// ── W5 Slice F2: anonymous feedback ────────────────────────────────────────────────
+// A sheet with a message box (500 characters), an optional screenshot and a quiet
+// Cloudflare Turnstile check, sent to the collector's POST /feedback (W1.9). Opened
+// from the About window, and from "Something wrong?" in the tram and stop panels, which
+// attach that route, direction and stop. What goes with a message: the app version,
+// browser and OS family, screen size, map style and zoom tier. Never location: the
+// last location fix stays on the device. A screenshot is shrunk here to 1280 px on its
+// longest side and re-encoded as JPEG (about 400 KB at most), which drops its EXIF data,
+// GPS included; a 240 px thumbnail goes with it for the control panel's list.
+// Turnstile's script loads only when the sheet first opens.
+const FEEDBACK_URL = 'https://wmt-collector.wyliechat.workers.dev/feedback';
+const TURNSTILE_SITEKEY = '0x4AAAAAAFjbG2s6fkrUElXZ';
+const TURNSTILE_JS = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+const FB_MAX_MSG = 500;
+const FB_IMG_MAX_PX = 1280, FB_IMG_MAX_BYTES = 400 * 1024, FB_THUMB_PX = 240;
+const FB_SEND_TIMEOUT_MS = 20000;
+const FB = { ctx: null, image: null, thumb: null, token: null, widget: null, sending: false, tsLoad: null, tsFailed: false };
+let INFO_FEEDBACK_CTX = null;   // what "Something wrong?" in the open tram or stop panel refers to
+
+function fbEl(id) { return document.getElementById(id); }
+function feedbackOpen() { return !!fbEl('feedback-panel')?.classList.contains('visible'); }
+
+// Browser and OS family only, never the user-agent string itself.
+function feedbackDevice() {
+  const ua = navigator.userAgent || '';
+  const os = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iOS'
+    : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows'
+    : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : 'other';
+  const browser = /Edg(e|A|iOS)?\//.test(ua) ? 'Edge' : /Firefox\/|FxiOS/.test(ua) ? 'Firefox'
+    : /SamsungBrowser/.test(ua) ? 'Samsung' : /Chrome\/|CriOS/.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari' : 'other';
+  return { os: os, browser: browser };
+}
+function feedbackContext() {
+  const dev = feedbackDevice();
+  const out = { app: APP_VERSION, browser: dev.browser, os: dev.os,
+    screen: Math.round(window.innerWidth) + 'x' + Math.round(window.innerHeight) + '@' + (Math.round((window.devicePixelRatio || 1) * 100) / 100),
+    style: mapStyle, tier: (ZOOM_TIERS[TIER] || {}).name || 'unknown',
+    lang: String(navigator.language || '').slice(0, 5), from: (FB.ctx && FB.ctx.from) || 'about' };
+  if (FB.ctx) ['route', 'dir', 'stop', 'tram'].forEach(k => { if (FB.ctx[k] !== undefined && FB.ctx[k] !== null) out[k] = String(FB.ctx[k]); });
+  return out;
+}
+
+// ctx: null (from About) or { from: 'tram'|'stop', label, route, dir, stop, tram }.
+function openFeedback(ctx) {
+  closeInfo(); closeDrawer(); closeAbout();
+  fbEl('alerts-panel')?.classList.remove('visible');
+  if (ctx !== undefined) FB.ctx = ctx;   // a new "about" replaces the old; reopening keeps the draft
+  renderFeedbackAbout();
+  feedbackStatus('');
+  fbEl('feedback-panel').classList.add('visible');
+  updateFeedbackSend();
+  startTurnstile();
+}
+function closeFeedback() { fbEl('feedback-panel')?.classList.remove('visible'); }
+function openFeedbackFromPanel() { openFeedback(INFO_FEEDBACK_CTX ? { ...INFO_FEEDBACK_CTX } : null); }
+function feedbackLinkHtml() {
+  return '<button type="button" class="fb-link" onclick="event.stopPropagation(); openFeedbackFromPanel()">Something wrong?</button>';
+}
+
+function renderFeedbackAbout() {
+  const box = fbEl('fb-about');
+  if (!FB.ctx || !FB.ctx.label) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = '<span>About: ' + escapeHtml(FB.ctx.label) + '</span>' +
+    '<button type="button" aria-label="Don\'t include this" onclick="FB.ctx = null; renderFeedbackAbout()">×</button>';
+}
+function feedbackStatus(msg, bad) {
+  const s = fbEl('fb-status');
+  s.textContent = msg || '';
+  s.classList.toggle('bad', !!bad);
+}
+function updateFeedbackSend() {
+  const msg = fbEl('fb-msg').value;
+  fbEl('fb-count').textContent = msg.length + ' / ' + FB_MAX_MSG;
+  const b = fbEl('fb-send');
+  b.disabled = FB.sending || !msg.trim() || !FB.token;
+  b.textContent = FB.sending ? 'Sending…' : 'Send';
+  fbEl('fb-check-note').textContent = FB.token || FB.sending ? '' : FB.tsFailed
+    ? 'The automatic check didn’t load. Check your connection, then close and reopen this.'
+    : 'Checking this is a person, not a bot…';
+}
+
+// ── Turnstile: loaded on first open; one widget, reset after every send ──
+function loadTurnstile() {
+  if (window.turnstile) return Promise.resolve();
+  if (!FB.tsLoad) FB.tsLoad = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = TURNSTILE_JS; s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => { FB.tsLoad = null; s.remove(); reject(new Error('turnstile script')); };
+    document.head.appendChild(s);
+  });
+  return FB.tsLoad;
+}
+function startTurnstile() {
+  if (FB.widget !== null) return;
+  FB.tsFailed = false; updateFeedbackSend();
+  loadTurnstile().then(() => {
+    if (FB.widget !== null) return;
+    FB.widget = window.turnstile.render('#fb-check', {
+      sitekey: TURNSTILE_SITEKEY, action: 'feedback', theme: 'dark', size: 'flexible',
+      appearance: 'interaction-only',
+      callback: t => { FB.token = t; updateFeedbackSend(); },
+      'expired-callback': () => { FB.token = null; updateFeedbackSend(); },
+      'error-callback': () => { FB.token = null; FB.tsFailed = true; updateFeedbackSend(); },
+    });
+  }).catch(() => { FB.tsFailed = true; updateFeedbackSend(); });
+}
+function resetTurnstile() {
+  FB.token = null;
+  try { if (FB.widget !== null && window.turnstile) window.turnstile.reset(FB.widget); } catch (e) {}
+}
+
+// ── Screenshot: shrink and re-encode in the browser (drops EXIF, GPS included) ──
+function dataUrlBytes(u) {
+  const b = u.slice(u.indexOf(',') + 1);
+  return Math.floor(b.length * 3 / 4) - (b.endsWith('==') ? 2 : b.endsWith('=') ? 1 : 0);
+}
+async function shrinkScreenshot(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('decode')); i.src = url;
+    });
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) throw new Error('decode');
+    const draw = (maxPx, q) => {
+      const s = Math.min(1, maxPx / Math.max(w, h));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+      const g = c.getContext('2d');
+      g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height);   // JPEG has no transparency
+      g.drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', q);
+    };
+    let image = null;
+    for (const [px, q] of [[FB_IMG_MAX_PX, 0.82], [FB_IMG_MAX_PX, 0.7], [FB_IMG_MAX_PX, 0.58], [FB_IMG_MAX_PX, 0.46], [960, 0.5], [720, 0.5]]) {
+      image = draw(px, q);
+      if (dataUrlBytes(image) <= FB_IMG_MAX_BYTES) break;
+    }
+    if (!image.startsWith('data:image/jpeg;base64,') || dataUrlBytes(image) > FB_IMG_MAX_BYTES) throw new Error('size');
+    return { image: image, thumb: draw(FB_THUMB_PX, 0.6) };
+  } finally { URL.revokeObjectURL(url); }
+}
+async function onFeedbackFile(input) {
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  feedbackStatus('Preparing the screenshot…');
+  try {
+    const r = await shrinkScreenshot(f);
+    FB.image = r.image; FB.thumb = r.thumb;
+    fbEl('fb-thumb').src = r.thumb;
+    fbEl('fb-preview').hidden = false; fbEl('fb-attach').hidden = true;
+    feedbackStatus('');
+  } catch (e) {
+    feedbackStatus('That picture couldn’t be read. Try another, or send without one.', true);
+  }
+}
+function removeFeedbackShot() {
+  FB.image = null; FB.thumb = null;
+  fbEl('fb-preview').hidden = true; fbEl('fb-attach').hidden = false; fbEl('fb-thumb').removeAttribute('src');
+}
+
+const FEEDBACK_ERRORS = {
+  empty: 'Please write a message first.',
+  too_long: 'Please keep it to 500 characters.',
+  image_type: 'That screenshot couldn’t be sent. Remove it and try again.',
+  image_too_big: 'That screenshot couldn’t be sent. Remove it and try again.',
+  thumb: 'That screenshot couldn’t be sent. Remove it and try again.',
+  check_failed: 'The automatic check didn’t pass. Please try again.',
+  daily_cap: 'Feedback is full for today. Please try again tomorrow.',
+  closed: 'Feedback isn’t open at the moment.',
+  not_configured: 'Feedback isn’t open at the moment.',
+  not_ready: 'Feedback isn’t open at the moment.',
+  origin: 'Feedback can’t be sent from this page.',
+};
+async function sendFeedback() {
+  const message = fbEl('fb-msg').value.trim();
+  if (FB.sending || !message || !FB.token) return;
+  FB.sending = true; feedbackStatus(''); updateFeedbackSend();
+  const body = JSON.stringify({ message: message.slice(0, FB_MAX_MSG), context: feedbackContext(),
+    image: FB.image, thumb: FB.image ? FB.thumb : null, token: FB.token });
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), FB_SEND_TIMEOUT_MS);
+  let res = null, json = null;
+  try {
+    res = await fetch(FEEDBACK_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+                                      body: body, signal: ctl.signal });
+    json = await res.json().catch(() => null);
+  } catch (e) { res = null; }
+  clearTimeout(timer);
+  FB.sending = false;
+  resetTurnstile();   // a token is good for one send only
+  if (res && res.ok && json && json.ok) {
+    fbEl('fb-msg').value = '';
+    removeFeedbackShot();
+    FB.ctx = null;
+    closeFeedback();
+    updateFeedbackSend();
+    showNotice('Thanks for your feedback. It helps make the app even better.');
+    return;
+  }
+  const code = json && json.error;
+  feedbackStatus(FEEDBACK_ERRORS[code] || ('Couldn’t send just now. Please try again in a minute.' + (code ? ' (' + code + ')' : '')), true);
+  updateFeedbackSend();
+}
+window.WMT_DEBUG.feedback = FB;
 
 // +/− step whole levels and grey out at the map's limits. Pinch, double-tap and
 // the wheel are untouched.
@@ -3712,7 +4015,7 @@ function updateZoomButtons() {
 // only one is open at a time.
 function openInfoPanel() {
   document.getElementById('alerts-panel')?.classList.remove('visible');
-  closeAbout();
+  closeAbout(); closeFeedback();
   document.getElementById('info-panel').classList.add('visible');
 }
 
@@ -3750,12 +4053,13 @@ function isSheetLayout() {
 }
 function initSheets() {
   const closeAlerts = () => document.getElementById('alerts-panel').classList.remove('visible');
-  [['info-panel', closeInfo], ['alerts-panel', closeAlerts], ['about-panel', closeAbout]].forEach(([id, close]) => {
+  [['info-panel', closeInfo], ['alerts-panel', closeAlerts], ['about-panel', closeAbout], ['feedback-panel', closeFeedback]].forEach(([id, close]) => {
     const el = document.getElementById(id);
     if (!el) return;
     let y0 = null, dy = 0;
     el.addEventListener('touchstart', e => {
-      y0 = (isSheetLayout() && el.scrollTop <= 0 && e.touches.length === 1) ? e.touches[0].clientY : null;
+      const onControl = !!(e.target && e.target.closest && e.target.closest('textarea, input, select, button, iframe'));
+      y0 = (isSheetLayout() && el.scrollTop <= 0 && e.touches.length === 1 && !onControl) ? e.touches[0].clientY : null;
       dy = 0;
     }, { passive: true });
     el.addEventListener('touchmove', e => {
@@ -3784,6 +4088,7 @@ function onKeyDown(e) {
   if (document.getElementById('drawer').classList.contains('open')) closeDrawer();
   else if (ap && ap.classList.contains('visible')) ap.classList.remove('visible');
   else if (ab && ab.classList.contains('visible')) closeAbout();
+  else if (feedbackOpen()) closeFeedback();
   else closeInfo();
 }
 
@@ -3817,7 +4122,20 @@ function escapeHtml(s) {
 // for a row and our estimate is LDX minutes late or more, or the route has a service
 // alert, the row says "Long delay" instead of a time: our numbers stop tracking
 // reality beyond a few minutes (brief 2.2).
-const STOP_ROWS_ONE = 5, STOP_ROWS_EACH = 4;   // rows shown: one platform / each of a merged pair
+// Rows per platform (Drew, 24 Oct): the next STOP_ROWS_MIN trams; if routes are still
+// missing, each missing route's next tram, soonest first, until every route with a tram
+// in the hour is shown or there are STOP_ROWS_MAX rows. A merged dot applies it to each
+// platform under its own heading.
+const STOP_ROWS_MIN = 3, STOP_ROWS_MAX = 6;
+function pickStopRows(list) {   // list: one platform's upcoming rows, soonest first
+  const out = list.slice(0, STOP_ROWS_MIN);
+  const have = new Set(out.map(r => r.routeId));
+  for (const r of list.slice(STOP_ROWS_MIN)) {
+    if (out.length >= STOP_ROWS_MAX) break;
+    if (!have.has(r.routeId)) { out.push(r); have.add(r.routeId); }
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
 const STOP_WINDOW_S = 3600;
 const WALK_MAX_MIN = 30;      // W5 Slice E2: longer walks aren't shown
 const PTV_DEP_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/ptv-departures?stop=';
@@ -4059,7 +4377,7 @@ function showStopInfo(sid, group) {
   if (group.length === 1) {
     // One platform: no heading; every row names its destination. A shared platform
     // (both directions) simply lists both, soonest first.
-    const list = upcoming.slice(0, STOP_ROWS_ONE);
+    const list = pickStopRows(upcoming);
     shown.push(...list);
     html += list.length ? list.map(r => stopRowHtml(r, cs)).join('') : none;
   } else {
@@ -4068,7 +4386,7 @@ function showStopInfo(sid, group) {
     const heads = group.map(platformHeading);
     const clash = !heads[0] || !heads[1] || heads[0] === heads[1];
     group.forEach((p, gi) => {
-      const list = upcoming.filter(r => r.sid === p).slice(0, STOP_ROWS_EACH);
+      const list = pickStopRows(upcoming.filter(r => r.sid === p));
       shown.push(...list);
       const t = clash ? (list.length ? '→ ' + list[0].dest : (TRAM_NETWORK.stops[p] || {}).n || '') : heads[gi];
       html += head(t) + (list.length ? list.map(r => stopRowHtml(r, cs)).join('') : none);
@@ -4077,6 +4395,8 @@ function showStopInfo(sid, group) {
   const anyPtv = shown.some(r => r.src === 'ptv');
   html += '<div style="font-size:9px;color:var(--muted);font-family:var(--font-mono);margin-top:8px;">' +
           escapeHtml(stopSourceText(anyPtv)) + '</div>';
+  INFO_FEEDBACK_CTX = { from: 'stop', label: stop.n, stop: group.join('+') };   // W5 Slice F2
+  html += feedbackLinkHtml();
 
   document.getElementById('info-content').innerHTML = html;
   openInfoPanel();
@@ -4136,7 +4456,7 @@ function toggleAlertsPanel() {
     });
   }
   p.innerHTML = html;
-  closeInfo(); closeDrawer(); closeAbout();   // one panel at a time: they share the bottom of a phone screen
+  closeInfo(); closeDrawer(); closeAbout(); closeFeedback();   // one panel at a time: they share the bottom of a phone screen
   p.classList.add('visible');
 }
 
