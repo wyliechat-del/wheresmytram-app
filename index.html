@@ -510,9 +510,11 @@
   #fb-send:disabled { opacity: 0.4; cursor: default; }
   .fb-note { margin-top: 10px; font-size: 11px; color: var(--muted); }
   .fb-link {
-    display: block; margin-top: 8px; padding: 6px 0; background: none; border: none; cursor: pointer;
-    color: var(--accent); font-family: var(--font-mono); font-size: 11px; text-decoration: underline;
+    display: inline-block; margin-top: 6px; padding: 6px 0; background: none; border: none; cursor: pointer;
+    color: var(--muted); font-family: var(--font-mono); font-size: 10px;
+    text-decoration: underline; text-decoration-color: rgba(100,116,139,0.5); text-underline-offset: 2px;
   }
+  .fb-link:hover { color: var(--accent); }
   .route-item.has-alert .route-name::after { content: ' ⚠'; color: var(--amber); font-size: 11px; }
 
   /* ── Phones: the tram/stop panel and the alerts panel are bottom sheets (W5 Slice B).
@@ -687,7 +689,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-f2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-w5';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -3791,7 +3793,7 @@ function toggleAbout() {
 // ── W5 Slice F2: anonymous feedback ────────────────────────────────────────────────
 // A sheet with a message box (500 characters), an optional screenshot and a quiet
 // Cloudflare Turnstile check, sent to the collector's POST /feedback (W1.9). Opened
-// from the About window, and from "Something wrong?" in the tram and stop panels, which
+// from the About window, and from "Feedback" in the tram and stop panels, which
 // attach that route, direction and stop. What goes with a message: the app version,
 // browser and OS family, screen size, map style and zoom tier. Never location: the
 // last location fix stays on the device. A screenshot is shrunk here to 1280 px on its
@@ -3805,7 +3807,7 @@ const FB_MAX_MSG = 500;
 const FB_IMG_MAX_PX = 1280, FB_IMG_MAX_BYTES = 400 * 1024, FB_THUMB_PX = 240;
 const FB_SEND_TIMEOUT_MS = 20000;
 const FB = { ctx: null, image: null, thumb: null, token: null, widget: null, sending: false, tsLoad: null, tsFailed: false };
-let INFO_FEEDBACK_CTX = null;   // what "Something wrong?" in the open tram or stop panel refers to
+let INFO_FEEDBACK_CTX = null;   // what "Feedback" in the open tram or stop panel refers to
 
 function fbEl(id) { return document.getElementById(id); }
 function feedbackOpen() { return !!fbEl('feedback-panel')?.classList.contains('visible'); }
@@ -3845,7 +3847,7 @@ function openFeedback(ctx) {
 function closeFeedback() { fbEl('feedback-panel')?.classList.remove('visible'); }
 function openFeedbackFromPanel() { openFeedback(INFO_FEEDBACK_CTX ? { ...INFO_FEEDBACK_CTX } : null); }
 function feedbackLinkHtml() {
-  return '<button type="button" class="fb-link" onclick="event.stopPropagation(); openFeedbackFromPanel()">Something wrong?</button>';
+  return '<button type="button" class="fb-link" aria-label="Send feedback about this" onclick="event.stopPropagation(); openFeedbackFromPanel()">Feedback</button>';
 }
 
 function renderFeedbackAbout() {
