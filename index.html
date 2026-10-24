@@ -599,7 +599,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-e1';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-e2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -808,16 +808,17 @@ function wmtBeacon(e, d) {
   try { navigator.sendBeacon(BEACON_URL, JSON.stringify({ e: e, d: d === undefined ? '-' : String(d) })); } catch (err) {}
 }
 
-// ── PTV field probe (tram-tap enrichment) — FIELD TEST ONLY ──────────────────
-// Off unless the URL carries ?ptv=<probe token>. When on, tapping a tram asks
-// the collector's PTV probe about that tram's next stop (via the stop's GTFS id,
-// gtfs=true), finds this run by route + scheduled time, and either shows the
-// real TramTracker fleet number + PTV's delay when a vehicle is assigned, or
-// rings the dot cyan when the run is in PTV's live window with NO vehicle (a
-// ghost). Public users have no token → no PTV calls, no rings, no change.
-const PTV_TOKEN = (() => { try { return new URLSearchParams(location.search).get('ptv'); } catch (e) { return null; } })();
-const PTV_FIELD = !!PTV_TOKEN;
-const PTV_PROBE_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/ptv-probe';
+// ── PTV for the tram panel (W5 Slice E2) ─────────────────────────────────────
+// Every PTV question now goes to the feed Worker's public /ptv-departures (ptvDepAsk,
+// with the stop panel's code from Slice E1). The old token-only probe path is gone.
+// A tapped tram asks about the first stop it reaches at least PTV_LEAD_S from now,
+// finds its own run there with the stop panel's matcher (directions paired first,
+// then nearest scheduled time, one departure per row), and shows PTV's fleet number,
+// low-floor and air-con, and PTV's live time. Dots never move on PTV's word.
+// ?ptv (any value) turns on the field extras: run ref, match gap, how long a fleet
+// number has been held, the stop asked, and the cyan ring on a run PTV lists with no
+// tram (a possible ghost).
+const PTV_FIELD = (() => { try { return new URLSearchParams(location.search).has('ptv'); } catch (e) { return false; } })();
 // PTV route_id per app route number (from probe /v3/routes, 2026-07). 3a→3.
 const PTV_ROUTE_ID = { '1':721,'109':722,'16':724,'19':725,'57':887,'59':897,
   '64':909,'67':913,'70':940,'72':947,'75':958,'78':976,'82':1002,'96':1041,
@@ -833,277 +834,60 @@ function ptvHmsToServiceSecs(hms) {
   return sec;
 }
 
-// Which stop to ask PTV about. The next stop is the obvious choice, but if the
-// tram is practically at it PTV has usually already dropped that departure from
-// its list — and the nearest-match then slides onto the FOLLOWING service, which
-// typically has no vehicle assigned yet. That is exactly the route 86 flicker:
-// two taps 13 seconds apart returned two different runs. So skip ahead to the
-// first stop at least PTV_LEAD_S away.
+// Which stop to ask PTV about. PTV drops a departure from its list as the tram
+// reaches the stop, so ask about the first stop at least PTV_LEAD_S away (the route
+// 86 flicker: asking about a stop the tram was practically at matched the following
+// service instead). Near the end of a trip, the next stop will do. Never the trip's
+// last stop: PTV lists departures, and a tram ending there has none.
 const PTV_LEAD_S = 90;
 const PTV_MATCH_S = 90;               // +/- window for matching scheduled times
-const PTV_STOP_TTL_MS = 60 * 1000;    // stop departures cached for a minute
+const PTV_FRESH_S = 90;               // PTV times older than this are not shown
 const PTV_RUN_TTL_MS = 10 * 60 * 1000;
-let PTV_STOP_CACHE = {};   // stopId  -> { at, table }
-let PTV_RUN_CACHE  = {};   // tripKey -> { runRef, vehicle, delayMin, at }
-const PTV_CALLS = { live: 0, cached: 0 };
+let PTV_TRIP_VEHICLE = {};   // tripKey -> { vehicle, runRef, at }: a run keeps its tram
+let PTV_RUN_OWNER = {};      // run_ref -> { key, at }: the one-run-per-dot guard
 
 function ptvQueryStopIdx(trip, cs) {
-  const eff = effectiveStopTimes(trip);
-  for (let i = 0; i < eff.length; i++) if (eff[i] - cs >= PTV_LEAD_S) return i;
+  const eff = effectiveStopTimes(trip), last = trip.stops.length - 1;
+  for (let i = 0; i < last; i++) if (eff[i] - cs >= PTV_LEAD_S) return i;
+  for (let i = 0; i < last; i++) if (eff[i] > cs) return i;
   return -1;
 }
 
-// One request per stop per minute. Nearby trams share next stops, so this is
-// where the call saving actually comes from: tapping five trams heading for the
-// same stop is one request, not five.
-async function ptvFetchStop(stopId) {
-  const now = Date.now();
-  const c = PTV_STOP_CACHE[stopId];
-  if (c && now - c.at < PTV_STOP_TTL_MS) { PTV_CALLS.cached++; return c.table; }
-  const url = PTV_PROBE_URL + '?token=' + encodeURIComponent(PTV_TOKEN) +
-              '&stop_id=' + encodeURIComponent(stopId) + '&gtfs=1';
-  const r = await fetch(url, { cache: 'no-store' });
-  if (!r.ok) throw new Error('http ' + r.status);
-  const data = await r.json();
-  const table = (data && data.table) || [];
-  PTV_STOP_CACHE[stopId] = { at: now, table: table };
-  PTV_CALLS.live++;
-  window.WMT_DEBUG.ptv = PTV_CALLS;
-  return table;
+function tripOnMap(key) {
+  for (const id in scheduleTrams) if (tripKey(scheduleTrams[id].trip) === key) return true;
+  return false;
 }
 
-// Resolve, applying the cache rule. A run never loses its tram, so a POSITIVE
-// result outranks a later negative: a wrong-run match, an ambiguous pair or a
-// PTV hiccup can no longer erase a good answer that has already been seen.
-async function ptvResolve(trip, cs) {
-  const qi = ptvQueryStopIdx(trip, cs);
-  if (qi < 0) return { noStop: true };
-  const res = await ptvLookup(trip, String(trip.stops[qi][0]),
-                              trip.start + trip.stops[qi][1]);
+// What PTV says about this trip at stop index q, from the answer already held for
+// that stop (the panel asks; this only reads). Never throws.
+//   answered: PTV's answer is fresh; matched: this trip's run was found in it;
+//   conflict: another tram on the map already holds that run (shown as "not available");
+//   delaySec: PTV's live delay at that stop, when it has an estimate.
+function tramPtv(trip, q, cs) {
+  const sid = String(trip.stops[q][0]);
+  const c = PTV_DEP[sid];
+  const out = { sid: sid, status: c ? (c.pending ? 'asking' : c.status) : 'not asked', error: c ? c.error : null };
+  const fresh = ptvDepFresh(sid);
+  if (!fresh) return out;
+  out.answered = true;
   const key = tripKey(trip);
-  const now = Date.now();
-  if (res && res.vehicle) {
-    PTV_RUN_CACHE[key] = { runRef: res.runRef, vehicle: res.vehicle,
-                           delayMin: res.estimateDelayMin, delaySec: res.delaySec, at: now };
-    return res;
+  const rows = stopRows([sid], cs, 3600);   // an hour back, so a very late tram still has its row
+  const row = rows.find(r => r.idx === q && tripKey(r.trip) === key);
+  const d = row ? ptvMatchRows(rows, fresh.table).get(row) : null;
+  if (!d) return out;
+  out.matched = true;
+  out.dep = d;
+  out.runRef = d.run_ref || null;
+  out.gapS = Math.round(Math.abs(ptvHmsToServiceSecs(d.scheduled_local) - row.sched));
+  out.horizonS = ptvHmsToServiceSecs(d.scheduled_local) - cs;
+  if (out.runRef) {
+    const o = PTV_RUN_OWNER[out.runRef];
+    if (o && o.key !== key && Date.now() - o.at < PTV_RUN_TTL_MS && tripOnMap(o.key)) { out.conflict = true; return out; }
+    PTV_RUN_OWNER[out.runRef] = { key: key, at: Date.now() };
   }
-  const c = PTV_RUN_CACHE[key];
-  if (c && now - c.at < PTV_RUN_TTL_MS) {
-    return { matched: true, runRef: c.runRef, vehicle: c.vehicle,
-             estimateDelayMin: c.delayMin, delaySec: c.delaySec,
-             cachedS: Math.round((now - c.at) / 1000) };
-  }
-  return res;
-}
-
-// Ask the probe about `nextStopId` (a GTFS stop id, gtfs=true), find this trip's
-// run by route + scheduled time (±90s, nearest), and report what PTV knows.
-// Purely additive and defensive: any failure returns a soft result, never throws.
-async function ptvLookup(trip, nextStopId, schedSecs) {
-  const rid = PTV_ROUTE_ID[trip.routeId];
-  if (!rid) return { matched: false };
-  let table;
-  try { table = await ptvFetchStop(nextStopId); }
-  catch (e) { return { error: 'fetch' }; }
-  let best = null, nearest = null, routeCount = 0, inWindow = 0;
-  for (const d of table) {
-    if (d.route_id !== rid || !d.scheduled_local) continue;
-    routeCount++;
-    const delta = Math.abs(ptvHmsToServiceSecs(d.scheduled_local) - schedSecs);
-    if (nearest === null || delta < nearest) nearest = delta;
-    if (delta <= PTV_MATCH_S) {
-      inWindow++;
-      if (!best || delta < best.delta) best = { d, delta };
-    }
-  }
-  // Two services inside the window — route 11's ~24 twin pairs sit 60-120s apart
-  // and do this routinely. We cannot tell which is ours, and naming the wrong
-  // tram is worse than naming none, so say nothing.
-  if (inWindow > 1) return { matched: false, ambiguous: true, inWindow: inWindow, nearest: nearest };
-  if (!best) return { matched: false, routeCount: routeCount, nearest: nearest };
-  const d = best.d;
-  const horizon = ptvHmsToServiceSecs(d.scheduled_local) - nowSecs(); // secs until departure
-  const hasVeh = !!(d.vehicle && d.vehicle.id);
-  return {
-    matched: true,
-    runRef: d.run_ref,
-    delta: Math.round(best.delta),
-    vehicle: hasVeh ? d.vehicle : null,
-    estimateDelayMin: (d.delay_min === undefined ? null : d.delay_min),
-    // Seconds, derived from the two local strings — delay_min is minute-rounded
-    // and too coarse to rebuild an arrival time from.
-    delaySec: (d.estimated_local && d.scheduled_local)
-      ? ptvHmsToServiceSecs(d.estimated_local) - ptvHmsToServiceSecs(d.scheduled_local)
-      : null,
-    // Ghost = in PTV's live window (out to ~25 min, allow 5 min slack behind) with no vehicle.
-    isGhost: !hasVeh && horizon <= 1500 && horizon >= -300
-  };
-}
-
-// Fill the panel from PTV where it has something to say, leaving the engine's
-// own numbers in place where it does not. PTV takes priority for Arrives and
-// Running so the two can never contradict each other; Source gains "+ PTV" as
-// the provenance flag; the Tram Number row is PTV-only by nature.
-// Dot positions are untouched — PTV never enters the positioning engine.
-const PTV_FRESH_S = 90;   // a cached delay older than this is stale: number only
-
-async function ptvApply(tramId, trip, nextStopIdx) {
-  if (!PTV_FIELD) return;
-  const panel = document.getElementById('info-content');
-  if (panel) panel.insertAdjacentHTML('beforeend',
-    '<div class="info-row"><span class="info-label">Tram Number</span>' +
-    '<span class="info-value" id="wmt-tramnum" style="font-family:var(--font-mono);font-size:11px;color:#64748b">checking\u2026</span></div>');
-
-  const set = (id, html, color) => {
-    if (selectedVehicle !== tramId) return;        // user moved to another tram
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.innerHTML = html;
-    if (color) el.style.color = color;
-  };
-  const ring = (on) => {
-    const mk = scheduleTrams[tramId];
-    const icon = mk && mk.marker && mk.marker._icon;
-    if (!icon) return;
-    if (on && !icon.classList.contains('gps-broadcasting')) icon.classList.add('ptv-ghost');
-    if (!on) icon.classList.remove('ptv-ghost');
-  };
-  const dim = (s) => ' <span style="opacity:0.55">\u00b7 ' + s + '</span>';
-
-  const res = await ptvResolve(trip, nowSecs());
-  if (selectedVehicle !== tramId) return;
-
-  // ── Tram Number ──
-  if (res && res.vehicle && res.vehicle.id) {
-    // run_ref + match delta are diagnostics, not rider information: recorded for
-    // the console, and shown only as "cached" when the number is held, not live.
-    window.WMT_DEBUG.ptvLast = { route: trip.routeId, tram: res.vehicle.id,
-      run: res.runRef, matchDeltaS: res.delta, delaySec: res.delaySec,
-      cachedS: res.cachedS, at: new Date().toLocaleTimeString() };
-    set('wmt-tramnum', res.vehicle.id +
-        (res.cachedS !== undefined ? dim('cached ' + res.cachedS + 's') : ''),
-        'var(--text)');
-    // PTV knows this vehicle's own fit-out, which beats the class-level guess in
-    // TRAM_ACCESS — and carries the line on its own when GTFS-RT gave no class.
-    const acc = (res.vehicle.low_floor === true) ? 'Low floor'
-              : (res.vehicle.low_floor === false) ? 'High floor (steps)' : null;
-    const air = (res.vehicle.air_conditioned === true) ? ', a/c' : '';
-    if (acc) {
-      const m = TRAM_META[tripKey(trip)];
-      const cls = (m && m.model) ? 'Tram model ' + m.model + ' \u2013 ' : '';
-      set('wmt-model', cls + acc + air);
-    }
-  } else {
-    const why = (!res || res.error) ? 'unavailable'
-      : res.noStop    ? 'no upcoming stop'
-      : res.ambiguous ? 'ambiguous, ' + res.inWindow + ' runs'
-      : res.matched   ? 'run ' + res.runRef + ', no vehicle'
-      : res.routeCount ? 'nearest ' + Math.round(res.nearest) + 's off'
-      : 'no ' + trip.routeId + ' run at that stop';
-    set('wmt-tramnum', 'Not available' + dim(why), '#94a3b8');
-  }
-
-  // ── Ghost ring: unchanged rules, GPS still outranks PTV silence ──
-  if (res && res.matched && res.isGhost) {
-    const mk = scheduleTrams[tramId];
-    const icon = mk && mk.marker && mk.marker._icon;
-    ring(!(icon && icon.classList.contains('gps-broadcasting')));
-  } else {
-    ring(false);
-  }
-
-  // ── PTV drives Arrives + Running when it has a live opinion ──
-  // A cached vehicle id stays valid for the whole trip, but a cached DELAY goes
-  // stale fast — so past PTV_FRESH_S we keep the number and leave the engine's
-  // timing alone rather than showing an old estimate as current.
-  if (!res || !res.matched) return;
-  if (res.delaySec === null || res.delaySec === undefined) return;
-  if (res.cachedS !== undefined && res.cachedS > PTV_FRESH_S) return;
-
-  const srcEl = document.getElementById('wmt-source');
-  if (srcEl && srcEl.textContent.indexOf('PTV') === -1) {
-    srcEl.textContent = srcEl.textContent + ' + PTV';
-  }
-
-  const mins = Math.round(res.delaySec / 60);
-  const label = mins > 2 ? mins + ' min late'
-              : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
-  const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
-  set('wmt-running', label, color);
-
-  if (nextStopIdx >= 0) {
-    const arr = trip.start + trip.stops[nextStopIdx][1] + res.delaySec;
-    const away = Math.round((arr - nowSecs()) / 60);
-    const loc = ((arr % 86400) + 86400) % 86400;
-    const hh = String(Math.floor(loc / 3600) % 24).padStart(2, '0');
-    const mm = String(Math.floor((loc % 3600) / 60)).padStart(2, '0');
-    set('wmt-arrives', hh + ':' + mm + ' (' + (away <= 0 ? 'now' : away + ' min') + ')', '#34d399');
-  }
-}
-
-// Called after a tram panel renders (field mode only). Injects a PTV line, then
-// fills it — and toggles the cyan ghost ring — when the lookup resolves.
-async function ptvEnrich(tramId, trip, nextStopIdx) {
-  if (!PTV_FIELD) return;
-  const panel = document.getElementById('info-content');
-  if (panel) panel.insertAdjacentHTML('beforeend',
-    '<div class="info-row" id="ptv-line"><span class="info-label">PTV</span>' +
-    '<span class="info-value" style="font-family:var(--font-mono);font-size:11px;color:var(--muted)">checking\u2026</span></div>');
-  const setLine = (html, color) => {
-    const el = document.getElementById('ptv-line');
-    if (!el || selectedVehicle !== tramId) return;   // user moved to another tram
-    const v = el.querySelector('.info-value');
-    v.innerHTML = html;
-    if (color) v.style.color = color;
-  };
-  const ring = (on) => {
-    const mk = scheduleTrams[tramId];
-    const icon = mk && mk.marker && mk.marker._icon;
-    if (!icon) return;
-    if (on && !icon.classList.contains('gps-broadcasting')) icon.classList.add('ptv-ghost');
-    if (!on) icon.classList.remove('ptv-ghost');
-  };
- // nextStopIdx is superseded by ptvQueryStopIdx (lead time), kept in the
-  // signature so the call site in showScheduleInfo is unchanged.
-  const res = await ptvResolve(trip, nowSecs());
-  if (!res || res.error) { setLine('unavailable', '#94a3b8'); return; }
-  if (res.noStop) { setLine('no upcoming stop', '#94a3b8'); return; }
-  if (res.ambiguous) {
-    setLine('ambiguous \u00b7 ' + res.inWindow + ' runs in window', '#94a3b8'); ring(false); return;
-  }
-if (!res.matched) {
-    const why = res.routeCount
-      ? 'no match \u00b7 nearest ' + Math.round(res.nearest) + 's off'
-      : 'no ' + trip.routeId + ' run at this stop';
-    setLine(why, '#94a3b8'); ring(false); return;
-  }  if (res.vehicle) {
-    ring(false);
-    const acc = res.vehicle.low_floor ? 'low-floor' : 'high-floor';
-    const air = res.vehicle.air_conditioned ? ', a/c' : '';
-    const del = (res.estimateDelayMin == null) ? ''
-      : res.estimateDelayMin > 2 ? ' \u00b7 ' + res.estimateDelayMin + ' min late'
-      : res.estimateDelayMin < -1 ? ' \u00b7 ' + Math.abs(res.estimateDelayMin) + ' min early'
-      : ' \u00b7 on time';
-    const tag = (res.cachedS !== undefined) ? ' \u00b7 cached ' + res.cachedS + 's'
-              : ' \u00b7 run ' + res.runRef + ' \u00b1' + res.delta + 's';
-    setLine('Tram ' + res.vehicle.id + ' (' + acc + air + ')' + del + tag, '#34d399');
-  } else if (res.isGhost) {
-    // A red-ringed tram is broadcasting GPS — already proven real. PTV having no
-    // vehicle on the matched run then means a feed gap or a wrong-twin match, NOT
-    // a ghost: never cyan it or call it one. GPS is the stronger evidence.
-    const gmk = scheduleTrams[tramId];
-    const gicon = gmk && gmk.marker && gmk.marker._icon;
-    if (gicon && gicon.classList.contains('gps-broadcasting')) {
-      ring(false);
-      setLine('GPS live \u00b7 no TramTracker vehicle \u00b7 run ' + res.runRef, '#94a3b8');
-    } else {
-      ring(true);
-      setLine('no vehicle assigned \u2014 possible ghost \u00b7 run ' + res.runRef, '#00e5ff');
-    }
-  } else {
-    ring(false);
-    setLine('scheduled, awaiting vehicle', '#94a3b8');
-  }
+  if (d.has_estimate && d.estimated_local && d.scheduled_local)
+    out.delaySec = ptvHmsToServiceSecs(d.estimated_local) - ptvHmsToServiceSecs(d.scheduled_local);
+  return out;
 }
 
 // Fetch remote dials, validate each against DIAL_BOUNDS, override defaults.
@@ -2289,48 +2073,180 @@ function tickSchedule() {
   if (selectedStop !== null && cs - lastStopPanelRender >= 15) {
     showStopInfo(selectedStop, selectedStopGroup);
   }
+  // W5 Slice E2: the tram panel too (minutes count down; PTV at most once a minute)
+  if (selectedVehicle && String(selectedVehicle).indexOf('sched_') === 0 && cs - lastTramPanelRender >= 15 &&
+      scheduleTrams[selectedVehicle] && document.getElementById('info-panel').classList.contains('visible')) {
+    showScheduleInfo(selectedVehicle, true);
+  }
 }
 
 
 
-function showScheduleInfo(tramId) {
+// ── W5 Slice E2: the tram panel ────────────────────────────────────────────────
+// Opens at once with our estimate; PTV is asked about the stop ahead (see tramPtv)
+// and the panel redraws when it answers. While open it refreshes every 15 s (the
+// minutes count down) and asks PTV again at most once a minute; closing stops both.
+//   - PTV's fleet number, low-floor and air-con, for every tram PTV can match.
+//   - PTV's live time, when fresh, replaces ours for Arrives and Running.
+//   - No PTV time, and our estimate LDX minutes late or more (or a service alert on
+//     the route): "Long delay expected" in place of the time (brief 2.2).
+//   - Source says what our estimate rests on: Timetable, Live delays or GPS corrected,
+//     with the data's age while the feed is delayed, plus "+ PTV" when PTV's time shows.
+let TRAM_PANEL = null;          // this opening: { tramId, key, qIdx, askedAt, ptvSent, ldSent }
+let lastTramPanelRender = 0;    // nowSecs() of the last tram-panel render (for the refresh)
+
+function tramSourceText(kind, withPtv) {
+  let t = kind;
+  if (LIVE.state === 'error') t += ' (live data unavailable)';
+  else if (LIVE.state === 'stale' && kind !== 'Timetable') {
+    const savedS = Math.max(LIVE.staleS || 0, LIVE.tripStaleS || 0) + (Date.now() - lastFetchOk) / 1000;
+    t += ' (' + Math.max(1, Math.round(savedS / 60)) + ' min old)';
+  }
+  return t + (withPtv ? ' + PTV' : '');
+}
+
+function hhmmService(secs) {
+  const loc = ((Math.round(secs) % 86400) + 86400) % 86400;
+  return String(Math.floor(loc / 3600) % 24).padStart(2, '0') + ':' + String(Math.floor((loc % 3600) / 60)).padStart(2, '0');
+}
+
+// refresh: true from the 15 s tick and PTV answers (no pan, no tram_tap beacon).
+function showScheduleInfo(tramId, refresh) {
   const t = scheduleTrams[tramId];
   if (!t) return;
   const def = ROUTE_DEFS[t.routeId] || { color: '#888', name: 'Unknown' };
   const d = t.data;
+  const key = tripKey(t.trip);
+  const opening = !refresh || !TRAM_PANEL || TRAM_PANEL.tramId !== tramId;
+  if (opening) TRAM_PANEL = { tramId: tramId, key: key, qIdx: -1, askedAt: 0, ptvSent: false, ldSent: false };
 
   selectedVehicle = tramId;
+  // A stop panel's 15 s refresh must not take over a tram panel opened on top of it.
+  selectedStop = null;
+  selectedStopGroup = null;
   document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
   document.getElementById('vm-' + tramId)?.classList.add('selected');
 
-  // Find next stop
   const cs = nowSecs();
-  // Use the same per-stop effective times as positioning so the panel matches the map
-  const effTimes = effectiveStopTimes(t.trip);
-  const nextStopIdx = effTimes.findIndex(tt => tt > cs);
+  const now = Date.now();
+  // The same per-stop effective times as positioning, so the panel matches the map
+  const eff = effectiveStopTimes(t.trip);
+  const nextStopIdx = eff.findIndex(tt => tt > cs);
+  if (opening && nextStopIdx >= 0) {
+    wmtBeacon('tram_tap', t.routeId + '|' + t.trip.dir + '|' + t.trip.stops[nextStopIdx][0]);   // dim = routeId|dir|nextStopId
+  }
+
+  // Ask PTV about the stop ahead: on opening, then at most once a minute while open
+  // (sooner only if the tram has passed the stop asked about).
+  let q = TRAM_PANEL.qIdx;
+  const qOk = q >= 0 && q < t.trip.stops.length - 1 && eff[q] > cs;
+  if (!qOk || now - TRAM_PANEL.askedAt >= PTV_DEP_ASK_MS) {
+    q = ptvQueryStopIdx(t.trip, cs);
+    TRAM_PANEL.qIdx = q;
+    if (q >= 0) {
+      const sid = String(t.trip.stops[q][0]);
+      const ask = ptvDepAsk(sid);
+      TRAM_PANEL.askedAt = now;
+      if (ask.started || (PTV_DEP[sid] && PTV_DEP[sid].pending)) ask.promise.then(() => {
+        if (selectedVehicle === tramId && TRAM_PANEL && TRAM_PANEL.tramId === tramId) showScheduleInfo(tramId, true);
+      });
+    }
+  }
+  const P = q >= 0 ? tramPtv(t.trip, q, cs) : { status: 'no stop ahead' };
+
+  // ── The tram: PTV's fleet number when it has one ──
+  const meta = TRAM_META[key];
+  const model = meta && meta.model;
+  let veh = null, heldS;
+  if (P.matched && !P.conflict && P.dep.vehicle && P.dep.vehicle.id) {
+    veh = P.dep.vehicle;
+    PTV_TRIP_VEHICLE[key] = { vehicle: veh, runRef: P.runRef, at: now };
+  } else if (!P.conflict) {
+    const c = PTV_TRIP_VEHICLE[key];
+    if (c && now - c.at < PTV_RUN_TTL_MS) { veh = c.vehicle; heldS = Math.round((now - c.at) / 1000); }
+  }
+  let tramLine;
+  if (veh) {
+    const parts = [];
+    if (model) parts.push(model + ' class');
+    if (veh.low_floor === true) parts.push('Low floor');
+    else if (veh.low_floor === false) parts.push('High floor (steps)');
+    else if (model && TRAM_ACCESS[model]) parts.push(TRAM_ACCESS[model]);
+    if (veh.air_conditioned === true) parts.push('Air-con');
+    tramLine = '<span style="font-weight:600;">Tram ' + escapeHtml(veh.id) + '</span>' +
+      (parts.length ? ' · ' + escapeHtml(parts.join(' · ')) : '');
+  } else if (model) {
+    tramLine = 'Tram model ' + escapeHtml(model) + (TRAM_ACCESS[model] ? ' – ' + TRAM_ACCESS[model] : '');
+  } else if (P.status === 'asking') {
+    tramLine = '<span style="color:var(--muted);">Checking PTV for the tram number…</span>';
+  } else {
+    tramLine = 'Tram number not available';
+  }
+
+  // ── Times: PTV's when fresh, else ours; Long delay expected past LDX ──
+  const ringed = !!(meta && meta.pingAge !== undefined);
+  const hasLive = (tripStopDelays[key] && tripStopDelays[key].length) || tripDelays[key] !== undefined;
+  const kind = ringed ? 'GPS corrected' : hasLive ? 'Live delays' : 'Timetable';
+  let arr = null, delay = 0, usePtv = false;
+  if (nextStopIdx >= 0) {
+    const sched = t.trip.start + t.trip.stops[nextStopIdx][1];
+    arr = eff[nextStopIdx];
+    delay = arr - sched;
+    if (P.delaySec !== undefined && !P.conflict) {
+      usePtv = true;
+      delay = P.delaySec;
+      // PTV's own time when it was asked about the next stop; else its delay carried back
+      arr = (q === nextStopIdx) ? ptvHmsToServiceSecs(P.dep.estimated_local) : sched + P.delaySec;
+    }
+  }
+  const long = !usePtv && (delay >= (TUNING.LDX || 5) * 60 || routeHasAlert(t.routeId));
+
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
-    wmtBeacon('tram_tap', t.routeId + '|' + t.trip.dir + '|' + ns[0]);   // dim = routeId|dir|nextStopId
-    // Use TRAM_NETWORK.stops for full stop names
     const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
-    const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
-    const arrSecs = effTimes[nextStopIdx];
-    const minsAway = Math.round((arrSecs - cs) / 60);
-    // Convert schedule seconds to HH:MM — schedule is in local Melbourne time
-    const arrSecsLocal = arrSecs % 86400;
-    const arrHH = Math.floor(arrSecsLocal / 3600) % 24;
-    const arrMM = Math.floor((arrSecsLocal % 3600) / 60);
-    const arrStr = String(arrHH).padStart(2,'0') + ':' + String(arrMM).padStart(2,'0');
-    nextStopHtml = stopName
-      ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
-        stopName.n + '</span></div>' +
-        '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" id="wmt-arrives" style="font-family:var(--font-mono)">' +
-        arrStr + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')</span></div>'
-      : '';
+    const stopName = stopFull ? stopFull.n : 'Stop ' + ns[0];
+    const minsAway = Math.round((arr - cs) / 60);
+    nextStopHtml =
+      '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
+        escapeHtml(stopName) + '</span></div>' +
+      '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" id="wmt-arrives" style="font-family:var(--font-mono)">' +
+        (long ? '—' : hhmmService(arr) + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')') + '</span></div>';
+  }
+  let running;
+  if (long) running = '<span class="info-value" id="wmt-running" style="color:#f87171;font-weight:600">Long delay expected</span>';
+  else if (kind === 'Timetable' && !usePtv) running = '<span class="info-value" id="wmt-running" style="color:#64748b">—</span>';
+  else {
+    const mins = Math.round(delay / 60);
+    const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
+    const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
+    running = '<span class="info-value" id="wmt-running" style="color:' + color + ';font-weight:600">' + label + '</span>';
   }
 
-  const nameParts = def.name.split(' – ');  // split on em dash
+  // ── Field extras (?ptv): run ref, match gap, the stop asked; the ghost ring ──
+  let field = '';
+  if (PTV_FIELD) {
+    const bits = [];
+    if (P.sid) bits.push('stop ' + P.sid);
+    if (P.status === 'asking') bits.push('asking…');
+    else if (P.conflict) bits.push('run ' + P.runRef + ' held by another tram');
+    else if (P.matched) bits.push('run ' + (P.runRef || '?') + ' ±' + P.gapS + 's' + (P.dep.vehicle && P.dep.vehicle.id ? '' : ', no vehicle'));
+    else if (P.answered) bits.push('no match');
+    else if (P.status === 'fail') bits.push('unavailable (' + P.error + ')');
+    else bits.push(P.status);
+    if (heldS !== undefined) bits.push('number held ' + heldS + 's');
+    field = '<div class="info-row"><span class="info-label">PTV</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;color:var(--muted)">' +
+      escapeHtml(bits.join(' · ')) + '</span></div>';
+    const icon = t.marker && t.marker._icon;
+    if (icon) {
+      // GPS outranks PTV silence: a broadcasting tram is never ringed as a ghost.
+      const ghost = P.matched && !P.conflict && !(P.dep.vehicle && P.dep.vehicle.id) &&
+        P.horizonS <= 1500 && P.horizonS >= -300 && !icon.classList.contains('gps-broadcasting');
+      icon.classList.toggle('ptv-ghost', !!ghost);
+    }
+  }
+
+  const nameParts = def.name.split(' – ');
   const dirLabel = t.trip.dir === 1
     ? '→ ' + (nameParts[1] || def.name)
     : '← ' + (nameParts[0] || def.name);
@@ -2339,34 +2255,31 @@ function showScheduleInfo(tramId) {
     '<div style="display:flex;align-items:center;margin-bottom:12px;">' +
     '<span class="info-route-badge" style="background:' + def.color + '">' + t.routeId + '</span>' +
     '<span style="font-size:13px;font-weight:600;">' + def.name + '</span></div>' +
-    (function() {
-      const m = TRAM_META[tripKey(t.trip)];
-      const txt = (m && m.model)
-        ? 'Tram model ' + m.model + (TRAM_ACCESS[m.model] ? ' \u2013 ' + TRAM_ACCESS[m.model] : '')
-        : 'Tram model not available';
-      return '<div id="wmt-model" style="font-size:13px;color:#fff;margin-bottom:12px;">' + txt + '</div>';
-    })() +
+    '<div id="wmt-model" style="font-size:13px;color:#fff;margin-bottom:12px;">' + tramLine + '</div>' +
     '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
     nextStopHtml +
-'<div class="info-row"><span class="info-label">Source</span><span class="info-value" id="wmt-source" style="font-family:var(--font-mono);font-size:11px;">' + ((TRAM_META[tripKey(t.trip)] && TRAM_META[tripKey(t.trip)].pingAge !== undefined) ? 'GPS Corrected' : 'Timetable') + '</span></div>' +    (function() {
-      const tk = tripKey(t.trip);
-      const hasData = (tripStopDelays[tk] && tripStopDelays[tk].length) || tripDelays[tk] !== undefined;
-      // Always render the row: with no DL there is still a slot for PTV to fill.
-      if (!hasData) return '<div class="info-row"><span class="info-label">Running</span>' +
-        '<span class="info-value" id="wmt-running" style="color:#64748b">\u2014</span></div>';
-      // Delay at the next stop specifically (varies along the route)
-      const ds = nextStopIdx >= 0
-        ? effTimes[nextStopIdx] - (t.trip.start + t.trip.stops[nextStopIdx][1])
-        : (tripDelays[tk] || 0);
-      const mins = Math.round(ds / 60);
-      const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
-      const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
-      return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" id="wmt-running" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
-    })();
+    '<div class="info-row"><span class="info-label">Source</span><span class="info-value" id="wmt-source" style="font-family:var(--font-mono);font-size:11px;">' +
+      escapeHtml(tramSourceText(kind, usePtv)) + '</span></div>' +
+    '<div class="info-row"><span class="info-label">Running</span>' + running + '</div>' +
+    field;
 
   openInfoPanel();
-  if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) panToVisible([d.lat, d.lng]);
-  if (PTV_FIELD) ptvApply(tramId, t.trip, nextStopIdx);
+  lastTramPanelRender = cs;
+  if (opening && Number.isFinite(d.lat) && Number.isFinite(d.lng)) panToVisible([d.lat, d.lng]);
+
+  // Beacons, once per opening. ptv_result once PTV has answered or failed for the stop
+  // asked: ok = PTV's time is on screen, miss = it answered with nothing usable for
+  // this tram, fail = no answer (error, timeout, busy). long_delay when it shows.
+  const c = P.sid ? PTV_DEP[P.sid] : null;
+  if (!TRAM_PANEL.ptvSent && c && !c.pending && c.status) {
+    TRAM_PANEL.ptvSent = true;
+    wmtBeacon('ptv_result', usePtv ? 'ok' : (!P.answered && c.status === 'fail') ? 'fail' : 'miss');
+  }
+  if (long && !TRAM_PANEL.ldSent) { TRAM_PANEL.ldSent = true; wmtBeacon('long_delay', t.routeId); }
+
+  window.WMT_DEBUG.tramPanel = { tram: tramId, trip: key, source: kind, ptv: P.status + (P.error ? ' (' + P.error + ')' : ''),
+    askedStop: P.sid || null, matched: !!P.matched, conflict: !!P.conflict, run: P.runRef || null,
+    fleet: veh ? veh.id : null, numberHeldS: heldS === undefined ? null : heldS, ptvShown: usePtv, longDelay: long };
 }
 
 // ── Load network data then draw ──────────────────────────────────────────────
@@ -3689,6 +3602,7 @@ function closeInfo() {
   selectedVehicle = null;
   selectedStop = null;
   selectedStopGroup = null;
+  TRAM_PANEL = null;
 }
 
 function setStatus(state, text) {
@@ -3872,6 +3786,7 @@ function escapeHtml(s) {
 // reality beyond a few minutes (brief 2.2).
 const STOP_ROWS_ONE = 5, STOP_ROWS_EACH = 4;   // rows shown: one platform / each of a merged pair
 const STOP_WINDOW_S = 3600;
+const WALK_MAX_MIN = 30;      // W5 Slice E2: longer walks aren't shown
 const PTV_DEP_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/ptv-departures?stop=';
 const PTV_DEP_ASK_MS = 60 * 1000;    // a panel left open asks PTV again at most once a minute
 const PTV_DEP_TIMEOUT_MS = 8000;
@@ -3967,7 +3882,8 @@ function routeHasAlert(id) {
 
 // Every trip of a switched-on route that calls at one of these platforms within the
 // window. The trip's own last stop is skipped: no row for a tram ending here.
-function stopRows(group, cs) {
+function stopRows(group, cs, backS) {
+  const back = backS || 1800;   // how far back a scheduled time may be (s)
   const rows = [], seen = new Set(), routes = new Set();
   group.forEach(sid => ((TRAM_NETWORK.stops[sid] || {}).r || []).forEach(r => {
     if (activeRoutes.has(r) && ROUTE_DEFS[r]) routes.add(r);
@@ -3975,13 +3891,13 @@ function stopRows(group, cs) {
   routes.forEach(routeId => {
     (SCHEDULE.trips[routeId] || []).forEach(trip => {
       const n = trip.stops.length;
-      if (n < 2 || trip.start > cs + STOP_WINDOW_S || trip.start + trip.stops[n - 1][1] < cs - 1800) return;
+      if (n < 2 || trip.start > cs + STOP_WINDOW_S || trip.start + trip.stops[n - 1][1] < cs - back) return;
       let eff = null;
       for (let i = 0; i < n - 1; i++) {
         const sid = String(trip.stops[i][0]);
         if (group.indexOf(sid) < 0) continue;
         const sched = trip.start + trip.stops[i][1];
-        if (sched > cs + STOP_WINDOW_S || sched < cs - 1800) continue;
+        if (sched > cs + STOP_WINDOW_S || sched < cs - back) continue;
         const key = routeId + '_' + trip.dir + '_' + trip.start + '_' + i;   // twins keep their own rows
         if (seen.has(key)) continue;
         seen.add(key);
@@ -4095,10 +4011,11 @@ function showStopInfo(sid, group) {
   let html = '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + escapeHtml(stop.n) + '</div>';
   // Walk time from the last location fix: straight-line distance x 1.25 street
   // detour, at 80 m/min (about 4.8 km/h), rounded up. Left out with no fix.
+  // Past WALK_MAX_MIN it says nothing: a 2-hour walk from wherever you last were is noise.
   if (userLoc) {
     const walkM = metresBetween(userLoc.lat, userLoc.lng, stop.lat, stop.lng);
     const mins = Math.max(1, Math.ceil((walkM * 1.25) / 80));
-    html += '<div style="font-size:13px;color:#fff;margin-bottom:2px;">Approx ' +
+    if (mins <= WALK_MAX_MIN) html += '<div style="font-size:13px;color:#fff;margin-bottom:2px;">Approx ' +
       mins + ' minute' + (mins === 1 ? '' : 's') + ' walk</div>';
   }
   html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
