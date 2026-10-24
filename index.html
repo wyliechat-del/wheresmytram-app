@@ -599,7 +599,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-d2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-e1';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -746,9 +746,10 @@ const DIAL_BOUNDS = {
   RT:    { min: 0,  max: 1   },
   T:     { min: 0,  max: 900 },
   ORL:   { min: 20, max: 200 },
-  DWELL: { min: 0,  max: 120 }
+  DWELL: { min: 0,  max: 120 },
+  LDX:   { min: 1,  max: 30  }   // W5 Slice E1: "Long delay" threshold, minutes (config v2)
 };
-const DEFAULT_DIALS = { G: 0.2, RT: 0.5, T: 420, ORL: 60, DWELL: 20 };
+const DEFAULT_DIALS = { G: 0.2, RT: 0.5, T: 420, ORL: 60, DWELL: 20, LDX: 5 };
 // Live dials store. Starts on baked defaults; loadConfig() may override at boot.
 window.TUNING = { ...DEFAULT_DIALS };
 // Debug surface (type WMT_DEBUG in the console): config provenance + GPS funnel.
@@ -1970,6 +1971,11 @@ async function chooseOpening() {
       if (applyNearbyRoutes()) {
         open.mode = 'location';
         map.setView([userLoc.lat, userLoc.lng], 16, { animate: false });
+        // W5 Slice E1 (brief 2.3): after first paint, ask PTV ahead for the two nearest
+        // stops, so their panels open with live times. One call covers both platforms.
+        const n = window.WMT_DEBUG.near || {};
+        window.WMT_DEBUG.ptvPrefetch = [n.stop, n.second].filter(Boolean);
+        window.WMT_DEBUG.ptvPrefetch.forEach(s => ptvDepAsk(s));
       } else {
         open.mode = 'network (no stop within 3 km)';
       }
@@ -1996,7 +2002,8 @@ function nearbyRouteSet(lat, lng) {
   });
   add(list[0].sid);
   for (let i = 1; i < list.length && set.size < 2; i++) add(list[i].sid);
-  return { routes: set, nearest: list[0].sid, metres: Math.round(list[0].d) };
+  const second = list.find(x => x.sid !== list[0].sid && x.sid !== STOP_PARTNER[list[0].sid]);
+  return { routes: set, nearest: list[0].sid, metres: Math.round(list[0].d), second: second ? second.sid : null };
 }
 // Switch the map to exactly the routes near you, for this visit only. False (and
 // nothing changed) when no stop is within 3 km.
@@ -2007,7 +2014,7 @@ function applyNearbyRoutes() {
   ROUTES_SESSION_ONLY = true;
   document.getElementById('route-session-note')?.classList.add('on');
   Object.keys(ROUTE_DEFS).forEach(id => { if (near.routes.has(id) !== activeRoutes.has(id)) toggleRoute(id); });
-  window.WMT_DEBUG.near = { stop: near.nearest, metres: near.metres, routes: [...near.routes] };
+  window.WMT_DEBUG.near = { stop: near.nearest, metres: near.metres, routes: [...near.routes], second: near.second };
   return true;
 }
 
@@ -2280,7 +2287,7 @@ function tickSchedule() {
 
   // Live-refresh the stop arrivals panel so the minutes count down
   if (selectedStop !== null && cs - lastStopPanelRender >= 15) {
-    showStopInfo(selectedStop);
+    showStopInfo(selectedStop, selectedStopGroup);
   }
 }
 
@@ -2569,7 +2576,7 @@ function buildStopDots() {
     const marker = L.marker(latlng, { icon: STOP_MDOT_ICON, zIndexOffset: 50 })
       .bindTooltip(st && st.n ? st.n : String(main), { sticky: true, direction: 'top' });
     marker.on('click', () => {
-      wmtBeacon('stop_tap', main); showStopInfo(main); keepVisible([latlng.lat, latlng.lng]);
+      wmtBeacon('stop_tap', main); showStopInfo(main, sids); keepVisible([latlng.lat, latlng.lng]);
     });
     STOP_DOTS.push({ sids: sids, latlng: latlng, marker: marker });
     if (sids.length === 2) pairs++; else singles++;
@@ -3681,6 +3688,7 @@ function closeInfo() {
   document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
   selectedVehicle = null;
   selectedStop = null;
+  selectedStopGroup = null;
 }
 
 function setStatus(state, text) {
@@ -3853,63 +3861,240 @@ function escapeHtml(s) {
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-function showStopInfo(sid) {
+// ── W5 Slice E1: the stop panel (design section 8; brief 2.1 to 2.3) ───────────
+// Rows are the trips that call at this stop's id, or at either platform of a merged
+// dot, from the switched-on routes, in the next hour. A trip that ends here has no
+// row, so a terminus lists departures only. Each row starts with our estimate
+// (timetable + live delays + GPS); once PTV answers, every row PTV can match shows
+// PTV's live time instead, and the source line gains "+ PTV". Where PTV has nothing
+// for a row and our estimate is LDX minutes late or more, or the route has a service
+// alert, the row says "Long delay" instead of a time: our numbers stop tracking
+// reality beyond a few minutes (brief 2.2).
+const STOP_ROWS_ONE = 5, STOP_ROWS_EACH = 4;   // rows shown: one platform / each of a merged pair
+const STOP_WINDOW_S = 3600;
+const PTV_DEP_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/ptv-departures?stop=';
+const PTV_DEP_ASK_MS = 60 * 1000;    // a panel left open asks PTV again at most once a minute
+const PTV_DEP_TIMEOUT_MS = 8000;
+const PTV_DEP_TTL_S = 30;            // the Worker's copy is never older than this when it's served
+const PTV_EXACT_S = 30;              // "the same scheduled time", for pairing PTV's directions with ours
+let PTV_DEP = {};                    // sid -> { askedAt, pending, status, error, ok: { at, recvAt, table } }
+let selectedStopGroup = null;        // the platform(s) the open stop panel covers
+let STOP_PANEL = null;               // this opening of the panel: { key, ptvSent, ldSent }
+const PLATFORM_HEADING = {};         // sid -> 'Northbound' etc. (worked out once)
+
+// Ask PTV (through the feed Worker's public /ptv-departures) about one stop. Never more
+// than once a minute per stop, never two at once; failures are remembered, not thrown.
+// started is true only when this call sent a request.
+function ptvDepAsk(sid) {
+  sid = String(sid);
+  const c = PTV_DEP[sid] || (PTV_DEP[sid] = { askedAt: 0, pending: null, status: null, error: null, ok: null });
+  if (c.pending) return { started: false, promise: c.pending };
+  if (Date.now() - c.askedAt < PTV_DEP_ASK_MS) return { started: false, promise: Promise.resolve(c) };
+  c.askedAt = Date.now();
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PTV_DEP_TIMEOUT_MS);
+  c.pending = fetch(PTV_DEP_URL + encodeURIComponent(sid), { signal: ctl.signal })
+    .then(r => r.json().then(j => [r, j], () => [r, null]))
+    .then(([r, j]) => {
+      if (r.ok && j && Array.isArray(j.table)) {
+        c.ok = { at: Number(j.at) || Date.now(), recvAt: Date.now(), table: j.table };
+        c.status = 'ok'; c.error = null;
+      } else {
+        c.status = 'fail';
+        c.error = (j && j.error) ? j.error + (j.detail ? ' ' + j.detail : '') : 'http ' + r.status;
+      }
+    })
+    .catch(() => { c.status = 'fail'; c.error = ctl.signal.aborted ? 'timeout' : 'network'; })
+    .then(() => { clearTimeout(timer); c.pending = null; window.WMT_DEBUG.ptvDep = PTV_DEP; return c; });
+  return { started: true, promise: c.pending };
+}
+// PTV's answer for a stop if it's fresh enough to show (PTV_FRESH_S), else null. Its
+// age counts from when PTV was asked; the Worker's own clock is trusted only within
+// its 30 s cache, so a phone with a wrong clock can't keep stale times on screen.
+function ptvDepFresh(sid) {
+  const c = PTV_DEP[String(sid)];
+  if (!c || !c.ok) return null;
+  const atRecv = Math.min(PTV_DEP_TTL_S, Math.max(0, (c.ok.recvAt - c.ok.at) / 1000));
+  return atRecv + (Date.now() - c.ok.recvAt) / 1000 <= PTV_FRESH_S ? c.ok : null;
+}
+
+// Match PTV departures to our rows. PTV answers for the merged parent stop, both
+// directions, numbered its own way (route 19 is 10 and 11, not 0 and 1). So for each
+// route, first pair each PTV direction with one of ours by how many scheduled times
+// agree exactly; then match rows nearest-first, within PTV_MATCH_S, inside that
+// pairing only, each PTV departure used once. Nothing matches across directions,
+// which is what stops 18:21 northbound taking 18:22 southbound's time.
+function ptvMatchRows(rows, table) {
+  const out = new Map();
+  const byRoute = {};
+  rows.forEach(r => (byRoute[r.routeId] = byRoute[r.routeId] || []).push(r));
+  Object.keys(byRoute).forEach(routeId => {
+    const ours = byRoute[routeId], rid = PTV_ROUTE_ID[routeId];
+    if (!rid) return;
+    const theirs = [];
+    table.forEach(d => { if (d && d.route_id === rid && d.scheduled_local) theirs.push({ d: d, s: ptvHmsToServiceSecs(d.scheduled_local) }); });
+    if (!theirs.length) return;
+    const score = [];
+    [...new Set(theirs.map(t => t.d.direction_id))].forEach(pd => {
+      [...new Set(ours.map(r => r.dir))].forEach(od => {
+        const n = theirs.filter(t => t.d.direction_id === pd &&
+          ours.some(r => r.dir === od && Math.abs(r.sched - t.s) <= PTV_EXACT_S)).length;
+        if (n > 0) score.push({ pd: pd, od: od, n: n });
+      });
+    });
+    score.sort((a, b) => b.n - a.n);
+    const dirOf = new Map(), takenOd = new Set();
+    score.forEach(x => { if (!dirOf.has(x.pd) && !takenOd.has(x.od)) { dirOf.set(x.pd, x.od); takenOd.add(x.od); } });
+    const pairs = [];
+    theirs.forEach((t, ti) => {
+      if (!dirOf.has(t.d.direction_id)) return;
+      const od = dirOf.get(t.d.direction_id);
+      ours.forEach(r => {
+        const dd = Math.abs(r.sched - t.s);
+        if (r.dir === od && dd <= PTV_MATCH_S) pairs.push({ r: r, ti: ti, dd: dd });
+      });
+    });
+    pairs.sort((a, b) => a.dd - b.dd);
+    const usedT = new Set();
+    pairs.forEach(p => { if (!out.has(p.r) && !usedT.has(p.ti)) { out.set(p.r, theirs[p.ti].d); usedT.add(p.ti); } });
+  });
+  return out;
+}
+
+function routeHasAlert(id) {
+  return (serviceAlerts || []).some(a => (a.routes || []).some(x => String(x) === String(id)));
+}
+
+// Every trip of a switched-on route that calls at one of these platforms within the
+// window. The trip's own last stop is skipped: no row for a tram ending here.
+function stopRows(group, cs) {
+  const rows = [], seen = new Set(), routes = new Set();
+  group.forEach(sid => ((TRAM_NETWORK.stops[sid] || {}).r || []).forEach(r => {
+    if (activeRoutes.has(r) && ROUTE_DEFS[r]) routes.add(r);
+  }));
+  routes.forEach(routeId => {
+    (SCHEDULE.trips[routeId] || []).forEach(trip => {
+      const n = trip.stops.length;
+      if (n < 2 || trip.start > cs + STOP_WINDOW_S || trip.start + trip.stops[n - 1][1] < cs - 1800) return;
+      let eff = null;
+      for (let i = 0; i < n - 1; i++) {
+        const sid = String(trip.stops[i][0]);
+        if (group.indexOf(sid) < 0) continue;
+        const sched = trip.start + trip.stops[i][1];
+        if (sched > cs + STOP_WINDOW_S || sched < cs - 1800) continue;
+        const key = routeId + '_' + trip.dir + '_' + trip.start + '_' + i;   // twins keep their own rows
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!eff) eff = effectiveStopTimes(trip);
+        const last = TRAM_NETWORK.stops[String(trip.stops[n - 1][0])];
+        rows.push({ routeId: routeId, dir: trip.dir, trip: trip, idx: i, sid: sid, sched: sched, pred: eff[i],
+                    dest: last && last.n ? last.n.replace(/\s*#\S+$/, '') : '' });
+      }
+    });
+  });
+  return rows;
+}
+
+// Northbound, Eastbound, Southbound or Westbound: the line's direction of travel at
+// this platform, for the merged-dot headings.
+function platformHeading(sid) {
+  if (PLATFORM_HEADING[sid] !== undefined) return PLATFORM_HEADING[sid];
+  let h = '';
+  const st = TRAM_NETWORK.stops[sid];
+  search:
+  for (const r of (st && st.r) || []) {
+    const shapes = TRAM_NETWORK.routes[r];
+    for (const trip of (SCHEDULE.trips[r] || [])) {
+      for (let i = 0; i < trip.stops.length - 1; i++) {
+        if (String(trip.stops[i][0]) !== sid) continue;
+        const shape = shapes && (shapes[String(trip.dir)] || shapes['0']);
+        const p = shape && posOnShape(shape, trip.stops[i][2]);
+        if (p && Number.isFinite(p.bearing)) {
+          h = ['Northbound', 'Eastbound', 'Southbound', 'Westbound'][Math.round((((p.bearing % 360) + 360) % 360) / 90) % 4];
+          break search;
+        }
+      }
+    }
+  }
+  return (PLATFORM_HEADING[sid] = h);
+}
+
+// The source line. While the live feed is delayed it says how old the data is
+// (design section 7); with no live data it says the times are timetable only.
+function stopSourceText(withPtv) {
+  let t = 'Estimated from timetable + live delays';
+  if (LIVE.state === 'error') t = 'Timetable only: live data unavailable';
+  else if (LIVE.state === 'stale') {
+    const savedS = Math.max(LIVE.staleS || 0, LIVE.tripStaleS || 0) + (Date.now() - lastFetchOk) / 1000;
+    t += ' (' + Math.max(1, Math.round(savedS / 60)) + ' min old)';
+  }
+  return t + (withPtv ? ' + PTV' : '');
+}
+
+function stopRowHtml(r, cs) {
+  const def = ROUTE_DEFS[r.routeId] || { color: '#888' };
+  let right;
+  if (r.long) {
+    right = '<span style="font-family:var(--font-mono);font-size:12px;font-weight:600;color:#f87171;">Long delay</span>';
+  } else {
+    const mins = Math.round((r.t - cs) / 60);
+    const dmin = Math.round(r.delay / 60);
+    const status = dmin > 2 ? dmin + ' late' : dmin < -1 ? Math.abs(dmin) + ' early' : 'on time';
+    const scol = dmin > 2 ? '#f87171' : dmin < -1 ? '#34d399' : '#94a3b8';
+    // Fixed-width columns, so the times and the late/early words line up row to row.
+    right = '<span style="display:inline-block;min-width:6ch;text-align:right;font-family:var(--font-mono);font-size:13px;font-weight:600;margin-right:8px;">' +
+              (mins <= 0 ? 'Due' : mins + ' min') + '</span>' +
+            '<span style="display:inline-block;min-width:7ch;font-family:var(--font-mono);font-size:10px;color:' + scol + ';">' + status + '</span>';
+  }
+  return '<div class="info-row" style="align-items:center;margin-bottom:6px;">' +
+    '<span class="info-route-badge" style="background:' + def.color + ';margin-right:8px;">' + r.routeId + '</span>' +
+    // One line per row: a long destination ends in an ellipsis (full name on hover).
+    '<span style="flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:8px;" title="' +
+      escapeHtml(r.dest) + '">' + escapeHtml(r.dest) + '</span>' +
+    '<span style="flex:none;white-space:nowrap;">' + right + '</span></div>';
+}
+
+// group: the platforms to cover (a tab: just sid; a merged dot: both of its platforms).
+// Called on a tap, every 15 s while open (the tick), and when PTV answers.
+function showStopInfo(sid, group) {
   if (!SCHEDULE || !TRAM_NETWORK) return;
-  const stop = TRAM_NETWORK.stops[String(sid)];
+  sid = String(sid);
+  const stop = TRAM_NETWORK.stops[sid];
   if (!stop) return;
+  group = (group && group.length) ? group.map(String) : [sid];
+  const key = group.join(',');
+  if (selectedStop === null || !STOP_PANEL || STOP_PANEL.key !== key) {
+    STOP_PANEL = { key: key, ptvSent: false, ldSent: new Set() };   // a new opening, not a refresh
+  }
   selectedStop = sid;
-  // Deselect any tram
+  selectedStopGroup = group;
   document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
   selectedVehicle = null;
 
   const cs = nowSecs();
-  const tapLat = stop.lat, tapLng = stop.lng;
-  const baseRoutes = stop.r || [];
-
-  // Melbourne stops are direction-specific (each platform is its own id, often on
-  // opposite sides of the road and numbered separately). Rather than rely on
-  // stop-id pairing, scan every trip of the routes serving this stop and find
-  // where each trip passes CLOSEST to the tapped point. Both directions live in
-  // SCHEDULE.trips[routeId], so this reliably surfaces both ways.
-  const RADIUS_M = 150;
-  const seen = new Set();
-  const arrivals = []; // { routeId, dir, predArr, delay }
-
-  baseRoutes.forEach(routeId => {
-    if (!activeRoutes.has(routeId)) return;     // only routes the user has on
-    const trips = SCHEDULE.trips[routeId] || [];
-    trips.forEach(trip => {
-      // Find the stop in this trip nearest the tapped location
-      let best = null, bestIdx = -1, bestD = Infinity;
-      for (let si = 0; si < trip.stops.length; si++) {
-        const st = trip.stops[si];
-        const sc = SCHEDULE.stops[String(st[0])];
-        if (!sc) continue;
-        const d = metresBetween(tapLat, tapLng, sc[0], sc[1]);
-        if (d < bestD) { bestD = d; best = st; bestIdx = si; }
-      }
-      if (!best || bestD > RADIUS_M) return;
-      const effT = effectiveStopTimes(trip);
-      const predArr = effT[bestIdx];                       // per-stop prediction
-      const delay = predArr - (trip.start + best[1]);      // delay at THIS stop
-      if (predArr < cs - 90 || predArr > cs + 3600) return; // next ~hour only
-      const key = routeId + '_' + trip.dir + '_' + trip.start;
-      if (seen.has(key)) return;
-      seen.add(key);
-      // Destination = the trip's actual final stop (robust, unlike name-order guessing)
-      const lastSt = TRAM_NETWORK.stops[String(trip.stops[trip.stops.length-1][0])];
-      const dest = lastSt && lastSt.n ? lastSt.n.replace(/\s*#\S+$/, '') : null;
-      arrivals.push({ routeId, dir: trip.dir, predArr, delay, dest });
-    });
+  // PTV: one call covers both platforms (it answers for the merged parent stop). On
+  // opening, then at most once a minute while open; the panel redraws when it answers.
+  const ask = ptvDepAsk(sid);
+  if (ask.started) ask.promise.then(() => {
+    if (selectedStop === sid && STOP_PANEL && STOP_PANEL.key === key) showStopInfo(sid, group);
   });
+  const ptv = ptvDepFresh(sid);
 
-  const byDir = {};
-  arrivals.forEach(a => { (byDir[a.dir] = byDir[a.dir] || []).push(a); });
-  Object.values(byDir).forEach(list => list.sort((x,y) => x.predArr - y.predArr));
+  const all = stopRows(group, cs);
+  const matched = ptv ? ptvMatchRows(all, ptv.table) : new Map();
+  const ldx = (TUNING.LDX || 5) * 60;
+  all.forEach(r => {
+    const d = matched.get(r);
+    if (d && d.has_estimate && d.estimated_local) { r.t = ptvHmsToServiceSecs(d.estimated_local); r.src = 'ptv'; }
+    else { r.t = r.pred; r.src = 'ours'; }
+    r.delay = r.t - r.sched;
+    r.long = r.src !== 'ptv' && (r.delay >= ldx || routeHasAlert(r.routeId));
+  });
+  const upcoming = all.filter(r => r.t >= cs - 60).sort((a, b) => a.t - b.t);
 
   let html = '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + escapeHtml(stop.n) + '</div>';
-  // Walk time from the last geolocate fix: straight-line distance × 1.25 street
-  // detour factor, at 80 m/min (~4.8 km/h), rounded up. Omitted with no fix.
+  // Walk time from the last location fix: straight-line distance x 1.25 street
+  // detour, at 80 m/min (about 4.8 km/h), rounded up. Left out with no fix.
   if (userLoc) {
     const walkM = metresBetween(userLoc.lat, userLoc.lng, stop.lat, stop.lng);
     const mins = Math.max(1, Math.ceil((walkM * 1.25) / 80));
@@ -3917,40 +4102,51 @@ function showStopInfo(sid) {
       mins + ' minute' + (mins === 1 ? '' : 's') + ' walk</div>';
   }
   html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
+  const none = '<div style="font-size:12px;color:var(--muted);">No trams from switched-on routes here in the next hour.</div>';
+  const head = t => '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin:8px 0 4px;">' + escapeHtml(t) + '</div>';
 
-  const dirKeys = Object.keys(byDir).filter(k => byDir[k].length);
-  if (!dirKeys.length) {
-    html += '<div style="font-size:12px;color:var(--muted);">No trams from switched-on routes scheduled here in the next hour.</div>';
+  const shown = [];
+  if (group.length === 1) {
+    // One platform: no heading; every row names its destination. A shared platform
+    // (both directions) simply lists both, soonest first.
+    const list = upcoming.slice(0, STOP_ROWS_ONE);
+    shown.push(...list);
+    html += list.length ? list.map(r => stopRowHtml(r, cs)).join('') : none;
   } else {
-    dirKeys.forEach(dir => {
-      const list = byDir[dir].slice(0, 3);
-      const firstDef = ROUTE_DEFS[list[0].routeId] || { name: '' };
-      const fparts = firstDef.name.split(' – ');
-      const headDest = list[0].dest || ((String(dir) === '1' ? (fparts[1] || fparts[0]) : (fparts[0] || fparts[1])) || '');
-      html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin:8px 0 4px;">→ ' + escapeHtml(headDest) + '</div>';
-      list.forEach(a => {
-        const def = ROUTE_DEFS[a.routeId] || { color:'#888', name:'' };
-        const parts = def.name.split(' – ');
-        const dest = a.dest || ((String(a.dir) === '1' ? (parts[1] || parts[0]) : (parts[0] || parts[1])) || '');
-        const mins = Math.round((a.predArr - cs) / 60);
-        const minsLabel = mins <= 0 ? 'Due' : mins + ' min';
-        const dmin = Math.round(a.delay / 60);
-        const status = dmin > 2 ? dmin + ' late' : dmin < -1 ? Math.abs(dmin) + ' early' : 'on time';
-        const scol = dmin > 2 ? '#f87171' : dmin < -1 ? '#34d399' : '#94a3b8';
-        html += '<div class="info-row" style="align-items:center;margin-bottom:6px;">' +
-          '<span class="info-route-badge" style="background:' + def.color + ';margin-right:8px;">' + a.routeId + '</span>' +
-          '<span style="flex:1;font-size:12px;">' + escapeHtml(dest) + '</span>' +
-          '<span style="font-family:var(--font-mono);font-size:13px;font-weight:600;margin-right:8px;">' + minsLabel + '</span>' +
-          '<span style="font-family:var(--font-mono);font-size:10px;color:' + scol + ';">' + status + '</span>' +
-          '</div>';
-      });
+    // A merged dot: each platform under its direction of travel. If both come out the
+    // same (or can't be worked out), each is headed by its first row's destination.
+    const heads = group.map(platformHeading);
+    const clash = !heads[0] || !heads[1] || heads[0] === heads[1];
+    group.forEach((p, gi) => {
+      const list = upcoming.filter(r => r.sid === p).slice(0, STOP_ROWS_EACH);
+      shown.push(...list);
+      const t = clash ? (list.length ? '→ ' + list[0].dest : (TRAM_NETWORK.stops[p] || {}).n || '') : heads[gi];
+      html += head(t) + (list.length ? list.map(r => stopRowHtml(r, cs)).join('') : none);
     });
-    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--font-mono);margin-top:8px;">Estimated from timetable + live delays</div>';
   }
+  const anyPtv = shown.some(r => r.src === 'ptv');
+  html += '<div style="font-size:9px;color:var(--muted);font-family:var(--font-mono);margin-top:8px;">' +
+          escapeHtml(stopSourceText(anyPtv)) + '</div>';
 
   document.getElementById('info-content').innerHTML = html;
   openInfoPanel();
   lastStopPanelRender = cs;
+
+  // Beacons, once per opening. ptv_result as soon as PTV has answered or failed:
+  // ok = a PTV time is on screen, miss = it answered with nothing usable here,
+  // fail = no answer (error, timeout, busy). long_delay once per route shown with it.
+  const c = PTV_DEP[sid];
+  if (!STOP_PANEL.ptvSent && c && !c.pending && c.status) {
+    STOP_PANEL.ptvSent = true;
+    wmtBeacon('ptv_result', anyPtv ? 'ok' : (!ptv && c.status === 'fail') ? 'fail' : 'miss');
+  }
+  shown.forEach(r => {
+    if (r.long && !STOP_PANEL.ldSent.has(r.routeId)) { STOP_PANEL.ldSent.add(r.routeId); wmtBeacon('long_delay', r.routeId); }
+  });
+  window.WMT_DEBUG.stopPanel = { stop: sid, platforms: group, rows: all.length, shown: shown.length,
+    ptv: c ? (c.pending ? 'asking' : c.status) + (c.error ? ' (' + c.error + ')' : '') : 'not asked',
+    ptvFresh: !!ptv, matched: matched.size, ptvShown: shown.filter(r => r.src === 'ptv').length,
+    longDelay: shown.filter(r => r.long).length };
 }
 
 // ── Service alerts ────────────────────────────────────────────
