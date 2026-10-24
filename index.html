@@ -305,6 +305,47 @@
   .tram-icon-outer.ptv-ghost { filter: drop-shadow(0 0 4px rgba(0,229,255,0.7)); }
   .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
+  /* ── W5 Slice C: City and Network tiers ──
+     Every tram shrinks to an 8 px dot in its route colour, with no arrow and no
+     number; a GPS reading shows as a red outline. The 36 px tap area stays. The
+     circle is scaled about its own centre, and its outline widths are set so they
+     come out at 1.5 px (white) and 2 px (red) after scaling. */
+  #map.trams-compact .tram-icon-outer svg g,
+  #map.trams-compact .tram-icon-outer svg text { display: none; }
+  #map.trams-compact .tram-icon-outer svg circle {
+    transform-box: fill-box; transform-origin: center; transform: scale(0.364); stroke-width: 4.1;
+  }
+  #map.trams-compact .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 5.5; }
+  #map.trams-compact .tram-icon-outer { filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+
+  /* Neighbourhood tier: one dot per stop, both platforms merged. The 24 px icon is
+     the tap area; the visible dot is 12 px, in the stop tabs' grey. */
+  .stop-mdot { background: none; border: none; display: flex; align-items: center; justify-content: center; }
+  .stop-mdot i {
+    display: block; width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
+    background: rgba(100, 116, 139, 0.95); border: 1.5px solid #fff;
+  }
+
+  /* Route-end squares (W5-10): the tram body's size and style, but square. Where
+     several routes end together their squares sit side by side. */
+  .route-end { display: flex; gap: 3px; background: none; border: none; }
+  .route-end span {
+    width: 22px; height: 22px; box-sizing: border-box; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    border: 1.5px solid #fff; border-radius: 3px; color: #fff; cursor: pointer;
+    font-family: 'DM Mono', monospace; font-weight: 700; font-size: 9px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.6);
+  }
+  .route-end span.l3 { font-size: 7px; }
+
+  /* Light map (24 Oct): the left-hand buttons are 85% solid so the map shows through
+     a little; icons and lettering stay fully solid. */
+  body.map-light .ctl-btn {
+    background: rgba(17, 24, 39, 0.85);
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  }
+  body.map-light .ctl-btn:hover { background: rgba(26, 34, 53, 0.85); }
+
   /* ── Phones: bottom-sheet rules are at the end of the stylesheet (W5 Slice B) ── */
 
   /* ── Route group headers ── */
@@ -538,7 +579,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-b2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-c';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -612,6 +653,7 @@ let mapStyle = (() => { try { return localStorage.getItem('melbtrams_map_style')
 
 function setMapStyle(style) {
   mapStyle = style;
+  document.body.classList.toggle('map-light', style === 'light');
   try { localStorage.setItem('melbtrams_map_style', style); } catch(e) {}
   document.getElementById('btn-dark').classList.toggle('active', style === 'dark');
   document.getElementById('btn-light').classList.toggle('active', style === 'light');
@@ -1692,6 +1734,9 @@ function initMap() {
     center: [-37.814, 144.963],
     zoom: 13,
     zoomControl: false,    // W5 Slice B: our own +/− sit in the left-hand stack
+    // W5 Slice C (W5-11): zoom is free; pinch and the wheel rest on quarter levels,
+    // +/− still step whole levels. 9 shows the whole metro area; 19 is the tile limit.
+    zoomSnap: 0.25, zoomDelta: 1, minZoom: 9, maxZoom: 19,
     attributionControl: true,
     rotate: true,          // leaflet-rotate: allow map bearing
     touchRotate: true,     // two-finger rotate on touch devices
@@ -1741,6 +1786,9 @@ function initMap() {
   }
   map.on('zoomend', updateZoomButtons);
   updateZoomButtons();
+  map.on('moveend', refreshView);          // zoomend always comes just before it
+  map.on('rotate', scheduleRefreshView);   // a turn changes what's on screen too
+  refreshView();
 
   loadAndDrawRoutes();
 }
@@ -2195,11 +2243,14 @@ async function loadAndDrawRoutes() {
     const res = await fetch('tram_network.json');
     TRAM_NETWORK = await res.json();
     drawRouteLines();
+    try { buildRouteEnds(); } catch (e) { console.warn('Route-end squares failed:', e); }
     drawStopDots();
     // Load schedule after network is ready
     await loadSchedule();
     mergeScheduleRouteMembership();   // registry r arrays are sparse; schedule is truth
     snapStopsToShapes();              // then sit every dot on its route's drawn line
+    try { buildStopDots(); } catch (e) { console.warn('Merged stop dots failed:', e); }
+    updateStopVisibility();
   } catch(e) {
     console.warn('Could not load tram_network.json:', e);
   }
@@ -2288,19 +2339,213 @@ function drawStopDots() {
       if (TAB_DEBUG) { tabEditOpen(sid); return; }   // dev: rotate, don't show arrivals
       wmtBeacon('stop_tap', sid); showStopInfo(sid); keepVisible([stop.lat, stop.lng]);
     });
-    if (routes.some(r => activeRoutes.has(r))) {
-      marker.addTo(map);
-    }
     stopMarkers[sid] = { marker, routes };
   });
+  updateStopVisibility();   // W5 Slice C: only the tier's stops, only near the screen
 }
 
+// W5 Slice C: a stop is drawn only when its tier draws stops (tabs at Street, merged
+// dots at Neighbourhood, none further out), one of its routes is switched on, and it
+// lies within the screen plus half a screen each way. Refreshed after every move.
+// The dev tools (?audit=1, ?tabs=1) keep tabs at every zoom.
 function updateStopVisibility() {
+  if (!map) return;
+  const tier = ZOOM_TIERS[TIER < 0 ? tierIndexAt(map.getZoom()) : TIER];
+  const mode = (AUDIT_DEBUG || TAB_DEBUG) ? 'tabs' : tier.stops;
+  const view = mode === 'none' ? null : map.getBounds().pad(STOP_VIEW_PAD);
+  const on = routes => !!routes && routes.some(r => activeRoutes.has(r));
+  let tabs = 0, dots = 0;
   Object.values(stopMarkers).forEach(({ marker, routes }) => {
-    const shouldShow = routes.some(r => activeRoutes.has(r));
-    if (shouldShow) marker.addTo(map);
-    else map.removeLayer(marker);
+    const want = mode === 'tabs' && on(routes) && view.contains(marker.getLatLng());
+    if (want) tabs++;
+    showLayer(marker, want);
   });
+  STOP_DOTS.forEach(d => {
+    const want = mode === 'dots' && d.sids.some(s => stopMarkers[s] && on(stopMarkers[s].routes)) &&
+                 view.contains(d.latlng);
+    if (want) dots++;
+    showLayer(d.marker, want);
+  });
+  window.WMT_DEBUG.stopsShown = { mode: mode, tabs: tabs, dots: dots };
+}
+function showLayer(layer, want) {
+  const has = map.hasLayer(layer);
+  if (want && !has) layer.addTo(map);
+  else if (!want && has) map.removeLayer(layer);
+}
+
+// ── W5 Slice C: zoom tiers (design section 5) ─────────────────────────────────
+// Each tier's lowest zoom and what it draws. Moving to a more detailed tier happens
+// at its boundary; moving back needs more than TIER_HYST below the boundary, so one
+// small pinch out at a boundary doesn't swap tabs for dots.
+const ZOOM_TIERS = [
+  { name: 'street',        min: 16,        stops: 'tabs', trams: 'full'    },
+  { name: 'neighbourhood', min: 14,        stops: 'dots', trams: 'full'    },
+  { name: 'city',          min: 12,        stops: 'none', trams: 'compact' },
+  { name: 'network',       min: -Infinity, stops: 'none', trams: 'compact' },
+];
+const TIER_HYST = 0.25;
+const STOP_VIEW_PAD = 0.5;   // stops drawn for the screen plus half a screen each way
+let TIER = -1;               // index into ZOOM_TIERS; -1 until the map first settles
+
+function tierIndexAt(z) {
+  for (let i = 0; i < ZOOM_TIERS.length; i++) if (z >= ZOOM_TIERS[i].min) return i;
+  return ZOOM_TIERS.length - 1;
+}
+function pickTier(z, cur) {
+  const raw = tierIndexAt(z);
+  if (cur < 0 || raw <= cur) return raw;                   // first time, or zooming in
+  return z < ZOOM_TIERS[cur].min - TIER_HYST ? raw : cur;  // zooming out: past the margin
+}
+function refreshView() {
+  if (!map) return;
+  const z = map.getZoom();
+  TIER = pickTier(z, TIER);
+  const tier = ZOOM_TIERS[TIER];
+  map.getContainer().classList.toggle('trams-compact', tier.trams === 'compact');
+  updateStopVisibility();
+  updateRouteEnds();
+  window.WMT_DEBUG.zoom = { zoom: z, tier: tier.name };
+}
+let refreshViewTimer = null;
+function scheduleRefreshView() {
+  clearTimeout(refreshViewTimer);
+  refreshViewTimer = setTimeout(refreshView, 150);
+}
+
+// ── W5 Slice C: merged stop dots (Neighbourhood tier) ─────────────────────────
+// One dot per platform pair, at the midpoint of its two tabs; stops with no partner
+// (or an ambiguous one) keep a dot of their own. Pairs are the ones the tab
+// orientation already found (orientStopTabs), and only mutual ones. Tapping a dot
+// opens the platform with more routes; today's stop panel already lists both
+// directions (Slice E rebuilds it to group the two platforms).
+let STOP_DOTS = [];      // [{ sids, latlng, marker }]
+let STOP_PARTNER = {};   // sid -> partner sid, from orientStopTabs
+const STOP_MDOT_ICON = L.divIcon({ className: 'stop-mdot', html: '<i></i>', iconSize: [24, 24] });
+
+function buildStopDots() {
+  STOP_DOTS.forEach(d => { if (map.hasLayer(d.marker)) map.removeLayer(d.marker); });
+  STOP_DOTS = [];
+  const done = new Set();
+  let pairs = 0, singles = 0;
+  Object.keys(stopMarkers).forEach(sid => {
+    if (done.has(sid)) return;
+    const p = STOP_PARTNER[sid];
+    const sids = (p && STOP_PARTNER[p] === sid && stopMarkers[p] && !done.has(p)) ? [sid, p] : [sid];
+    sids.forEach(x => done.add(x));
+    const lls = sids.map(x => stopMarkers[x].marker.getLatLng());
+    const latlng = L.latLng(lls.reduce((a, l) => a + l.lat, 0) / lls.length,
+                            lls.reduce((a, l) => a + l.lng, 0) / lls.length);
+    const main = sids.slice().sort((a, b) =>
+      (stopMarkers[b].routes || []).length - (stopMarkers[a].routes || []).length)[0];
+    const st = TRAM_NETWORK.stops[main];
+    const marker = L.marker(latlng, { icon: STOP_MDOT_ICON, zIndexOffset: 50 })
+      .bindTooltip(st && st.n ? st.n : String(main), { sticky: true, direction: 'top' });
+    marker.on('click', () => {
+      wmtBeacon('stop_tap', main); showStopInfo(main); keepVisible([latlng.lat, latlng.lng]);
+    });
+    STOP_DOTS.push({ sids: sids, latlng: latlng, marker: marker });
+    if (sids.length === 2) pairs++; else singles++;
+  });
+  window.WMT_DEBUG.stopDots = { dots: STOP_DOTS.length, pairs: pairs, singles: singles };
+}
+
+// ── W5 Slice C: route-end squares (W5-10, design section 6) ───────────────────
+// Built once from tram_network.json, so a timetable update moves them too. A route's
+// two direction shapes ending within END_MERGE_M of each other share one end; a
+// route with fewer than two ends is a loop (35) and gets none. Ends of different
+// routes within END_SITE_M form one site, drawn as one marker with the squares side
+// by side. Only switched-on routes show. Squares sit under stops and trams.
+const END_MERGE_M = 300;
+const END_SITE_M = 150;
+const END_SQ_PX = 22, END_GAP_PX = 3;
+const END_CBD = [-37.8136, 144.9631];   // declutter keeps the sites furthest from here
+let END_SITES = [];   // [{ lat, lng, routes, shown, key, marker, cbdM }]
+
+function buildRouteEnds() {
+  if (!TRAM_NETWORK || !map) return;
+  const avg = (list, k) => list.reduce((a, p) => a + p[k], 0) / list.length;
+  const ends = [];
+  Object.entries(TRAM_NETWORK.routes).forEach(([id, dirs]) => {
+    if (!ROUTE_DEFS[id] || !dirs) return;
+    const pts = [];
+    Object.values(dirs).forEach(sh => {
+      if (Array.isArray(sh) && sh.length >= 2 && Array.isArray(sh[0])) pts.push(sh[0], sh[sh.length - 1]);
+    });
+    const groups = [];
+    pts.forEach(p => {
+      const g = groups.find(g => g.some(q => metresBetween(q[0], q[1], p[0], p[1]) <= END_MERGE_M));
+      if (g) g.push(p); else groups.push([p]);
+    });
+    if (groups.length < 2) return;
+    groups.forEach(g => ends.push({ id: id, lat: avg(g, 0), lng: avg(g, 1) }));
+  });
+  const sites = [];
+  ends.forEach(e => {
+    const s = sites.find(s => s.some(q => metresBetween(q.lat, q.lng, e.lat, e.lng) <= END_SITE_M));
+    if (s) s.push(e); else sites.push([e]);
+  });
+  const order = Object.keys(ROUTE_DEFS);
+  END_SITES.forEach(s => { if (map.hasLayer(s.marker)) map.removeLayer(s.marker); });
+  END_SITES = sites.map(list => {
+    const lat = avg(list.map(e => [e.lat]), 0), lng = avg(list.map(e => [e.lng]), 0);
+    const routes = [...new Set(list.map(e => e.id))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const site = { lat: lat, lng: lng, routes: routes, shown: [], key: null,
+                   cbdM: metresBetween(lat, lng, END_CBD[0], END_CBD[1]),
+                   marker: L.marker([lat, lng], { icon: endSiteIcon(routes), zIndexOffset: -10000 }) };
+    site.marker.on('click', ev => {
+      const t = ev && ev.originalEvent && ev.originalEvent.target;
+      const sq = t && t.closest ? t.closest('[data-route]') : null;
+      const id = sq ? sq.getAttribute('data-route') : site.shown[0];
+      if (id && ROUTE_DEFS[id]) showNotice('Route ' + id + ' \u00b7 ' + ROUTE_DEFS[id].name);
+    });
+    return site;
+  });
+  window.WMT_DEBUG.routeEnds = { routes: new Set(ends.map(e => e.id)).size, ends: ends.length,
+                                 sites: END_SITES.length };
+  updateRouteEnds();
+}
+function endSiteHtml(routes) {
+  return routes.map(r => '<span data-route="' + r + '"' + (r.length > 2 ? ' class="l3"' : '') +
+    ' style="background:' + ROUTE_DEFS[r].color + '">' + r + '</span>').join('');
+}
+function endSiteIcon(routes) {
+  const w = routes.length * END_SQ_PX + (routes.length - 1) * END_GAP_PX;
+  return L.divIcon({ className: 'route-end', html: endSiteHtml(routes),
+                     iconSize: [w, END_SQ_PX], iconAnchor: [w / 2, END_SQ_PX / 2] });
+}
+// Show each site's switched-on routes, then declutter: place sites outermost first
+// (furthest from the CBD) and skip any whose squares would overlap one already
+// placed, so zoomed out you see the suburban ends and the CBD ends return as you
+// zoom in. Runs after every move (cheap: 36 sites) and on every route toggle.
+function updateRouteEnds() {
+  if (!map || !END_SITES.length) return;
+  const live = [];
+  END_SITES.forEach(s => {
+    const shown = s.routes.filter(r => activeRoutes.has(r));
+    const key = shown.join(',');
+    if (key !== s.key) {
+      s.key = key; s.shown = shown;
+      if (shown.length) s.marker.setIcon(endSiteIcon(shown));
+    }
+    s.place = false;
+    if (shown.length) live.push(s);
+  });
+  live.sort((a, b) => b.cbdM - a.cbdM);
+  const boxes = [];
+  let hidden = 0;
+  live.forEach(s => {
+    const p = map.latLngToContainerPoint([s.lat, s.lng]);
+    const hw = (s.shown.length * END_SQ_PX + (s.shown.length - 1) * END_GAP_PX) / 2 + 2, hh = END_SQ_PX / 2 + 2;
+    const b = { x0: p.x - hw, x1: p.x + hw, y0: p.y - hh, y1: p.y + hh };
+    if (boxes.some(o => b.x0 < o.x1 && o.x0 < b.x1 && b.y0 < o.y1 && o.y0 < b.y1)) { hidden++; return; }
+    boxes.push(b);
+    s.place = true;
+  });
+  END_SITES.forEach(s => showLayer(s.marker, s.place));
+  const re = window.WMT_DEBUG.routeEnds || {};
+  re.shown = live.length - hidden; re.hidden = hidden;
+  window.WMT_DEBUG.routeEnds = re;
 }
 
 // Heal sparse route membership in the stop registry. The generated r arrays
@@ -2888,6 +3133,7 @@ function orientStopTabs(geo) {
     if (p) partner[sid] = p;
   });
 
+  STOP_PARTNER = partner;   // W5 Slice C: the merged stop dots reuse these pairs
   const rot = {}, srcOf = {};
   let byOffset = 0, byPair = 0, byPartner = 0, fallback = 0;
 
@@ -3026,7 +3272,7 @@ function toggleRoute(id) {
 
   updateTramCount();
   updateStopVisibility();
-
+  updateRouteEnds();
 }
 
 // ── Fetch trams from Worker ────────────────────────────────────────────────
