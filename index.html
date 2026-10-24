@@ -599,7 +599,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-e2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-e3';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -747,48 +747,70 @@ const DIAL_BOUNDS = {
   T:     { min: 0,  max: 900 },
   ORL:   { min: 20, max: 200 },
   DWELL: { min: 0,  max: 120 },
-  LDX:   { min: 1,  max: 30  }   // W5 Slice E1: "Long delay" threshold, minutes (config v2)
+  LDX:   { min: 1,  max: 30  },  // W5 Slice E1: "Long delay" threshold, minutes (config v2)
+  GPULL: { min: -60, max: 120 }  // W5 Slice E3: clock shift for GPS-corrected trams, seconds (config v2)
 };
-const DEFAULT_DIALS = { G: 0.2, RT: 0.5, T: 420, ORL: 60, DWELL: 20, LDX: 5 };
+const DEFAULT_DIALS = { G: 0.2, RT: 0.5, T: 420, ORL: 60, DWELL: 20, LDX: 5, GPULL: 0 };
 // Live dials store. Starts on baked defaults; loadConfig() may override at boot.
 window.TUNING = { ...DEFAULT_DIALS };
 // Debug surface (type WMT_DEBUG in the console): config provenance + GPS funnel.
 window.WMT_DEBUG = { config: { source: 'baked', note: 'config fetch not completed yet' } };
 
 // ── PULL: time-scheduled forward nudge for timetable-only trams ─────────────
-// Field-experiment dial (baked for now; control-plane candidate later). Pulls
-// TT dots forward in TIME; the schedule's own local pace converts that into
+// Pulls TT dots forward in TIME; the schedule's own local pace converts that into
 // distance, so the visible shift self-scales with traffic (large on fast quiet
 // track, small in the slow city grid). Applies ONLY to trams with no live GPS
-// correction this fetch — ringed trams are already placed by G/RT, and trams
-// whose ring ages out fall back to the PULL-adjusted dot (softer than the old
-// snap to pure TT). Stop/tram info panels are deliberately unaffected: PULL
-// shifts the clock inside interpolateTrip, never the effective times.
-const PULL_UNIT_SECS = 15;   // seconds per PULL unit (so PULL 2 = 30 s)
+// correction — those are placed by G/RT (plus GPULL, below), and trams whose ring
+// ages out fall back to the PULL-adjusted dot (softer than the old snap to pure
+// TT). Stop/tram info panels are deliberately unaffected: PULL shifts the clock
+// inside interpolateTrip, never the effective times.
+//
+// W5 Slice E3: the tables come from config v2 (the control panel's PULL boxes):
+// weekday for Mon-Fri and holidays on a weekday timetable, weekend for the rest.
+// [[hour 0-24, seconds], ...], LOCAL wall-clock hours, linear between points. The
+// built-in copy is the config Worker's seed (today's values, PULL_UNIT_SECS gone),
+// used for a table that is missing or breaks a rule. Day type comes from
+// getTodayType() (service-day convention: before 4am the previous day's table).
+const PULL_BUILTIN = [[0, 30], [6, 30], [7, 0], [18, 0], [19, 30], [24, 30]];
+const PULL_TABLES = { weekday: PULL_BUILTIN.map(p => p.slice()), weekend: PULL_BUILTIN.map(p => p.slice()) };
 
-// Breakpoint tables: [hourOfDay 0-24, pullUnits], LOCAL wall-clock hours.
-// Linear interpolation between points. Set all units to 0 to disable.
-// Day type comes from getTodayType() (service-day convention: before 4am the
-// previous day's table applies — both tables agree at those hours anyway).
-// ── WEEKDAY table ──
-const PULL_WEEKDAY = [[0,2],[6,2],[7,0],[18,0],[19,2],[24,2]];
-// ── WEEKEND + PUBLIC HOLIDAY table (tweak independently by observation) ──
-const PULL_WEEKEND = [[0,2],[6,2],[7,0],[18,0],[19,2],[24,2]];
+// One config table, [["HH:MM", seconds], ...], to [[hours, seconds], ...], or null
+// if it breaks the config Worker's rules: 2 to 24 lines, 00:00 first, 24:00 last,
+// times never going backwards, seconds from -60 to +180.
+function parsePullTable(t) {
+  if (!Array.isArray(t) || t.length < 2 || t.length > 24) return null;
+  const out = [];
+  for (const line of t) {
+    if (!Array.isArray(line) || line.length !== 2) return null;
+    const m = /^(\d{2}):(\d{2})$/.exec(line[0]), secs = line[1];
+    if (!m || typeof secs !== 'number' || !isFinite(secs) || secs < -60 || secs > 180) return null;
+    const hh = +m[1], mm = +m[2];
+    if (mm > 59 || hh > 24 || (hh === 24 && mm !== 0)) return null;
+    const h = hh + mm / 60;
+    if (out.length && h < out[out.length - 1][0]) return null;
+    out.push([h, secs]);
+  }
+  if (out[0][0] !== 0 || out[out.length - 1][0] !== 24) return null;
+  return out;
+}
 
-function pullSecsNow() {
-  const table = getTodayType() === 'weekday' ? PULL_WEEKDAY : PULL_WEEKEND;
-  const d = new Date();
-  const h = d.getHours() + d.getMinutes()/60 + d.getSeconds()/3600;
-  let units = table[table.length - 1][1];
+// The pull in seconds at a wall-clock hour (0-24) for a day kind ('weekday' or not).
+function pullSecsAt(h, kind) {
+  const table = PULL_TABLES[kind === 'weekday' ? 'weekday' : 'weekend'];
+  let secs = table[table.length - 1][1];
   for (let i = 0; i < table.length - 1; i++) {
-    const h0 = table[i][0], u0 = table[i][1];
-    const h1 = table[i+1][0], u1 = table[i+1][1];
+    const h0 = table[i][0], s0 = table[i][1];
+    const h1 = table[i+1][0], s1 = table[i+1][1];
     if (h >= h0 && h <= h1) {
-      units = (h1 === h0) ? u1 : u0 + (u1 - u0) * (h - h0) / (h1 - h0);
+      secs = (h1 === h0) ? s1 : s0 + (s1 - s0) * (h - h0) / (h1 - h0);
       break;
     }
   }
-  return units * PULL_UNIT_SECS;
+  return secs;
+}
+function pullSecsNow() {
+  const d = new Date();
+  return pullSecsAt(d.getHours() + d.getMinutes()/60 + d.getSeconds()/3600, getTodayType());
 }
 
 // Public GET /config on the config Worker (live). The viewer adopts these dials
@@ -910,7 +932,13 @@ async function loadConfig() {
       }                          // else keep the baked default for this dial
     }
     // Unknown keys in cfg.dials are ignored by construction.
-    window.WMT_DEBUG.config = { source: 'remote', v: cfg.v, dials: { ...window.TUNING } };
+    // W5 Slice E3: the PULL tables. A missing or bad table keeps the built-in copy.
+    const pullFrom = {};
+    for (const k of ['weekday', 'weekend']) {
+      const t = parsePullTable(cfg.pull && cfg.pull[k]);
+      if (t) { PULL_TABLES[k] = t; pullFrom[k] = 'remote'; } else pullFrom[k] = 'baked';
+    }
+    window.WMT_DEBUG.config = { source: 'remote', v: cfg.v, dials: { ...window.TUNING }, pull: pullFrom, pullTables: PULL_TABLES };
   } catch (e) { window.WMT_DEBUG.config = { source: 'baked', note: 'config fetch failed: ' + (e && e.message || e) }; }
 }
 
@@ -1112,9 +1140,11 @@ const DRIFT_CAP_S = 90;
 // passing the GPS gates fades out over several seconds instead of snapping back
 // to pure timetable in a single frame — the "half way to the next stop, then
 // back to the last one" artifact.
-// Rest position is -pullSecsNow(), not 0: PULL shifts the clock forward while
-// GPS_CORR shifts stop times back, so -pull is the correction that holds the dot
-// exactly where PULL will hold it once the key is dropped. No step at handoff.
+// Rest position is GPULL - pullSecsNow(), not 0: a tram with a GPS_CORR entry is
+// evaluated GPULL ahead of the clock and GPS_CORR shifts its stop times back, while
+// a dropped tram is evaluated pull ahead with no shift. GPULL - pull is the
+// correction that holds the dot exactly where PULL will hold it once the key is
+// dropped. No step at handoff. (Before W5 Slice E3 GPULL was 0, so it was -pull.)
 let GPS_TARGET = {};         // tripKey → wanted correction, rebuilt every fetch
 const SLEW_PER_SEC  = 1.5;   // max change per second while tracking a live target
 const DECAY_PER_SEC = 1.0;   // max change per second while fading out
@@ -1135,7 +1165,7 @@ function easeCorrections() {
                                      : slewToward(prev, GPS_TARGET[key], SLEW_PER_SEC);
     tracking++;
   }
-  const rest = -pullSecsNow();
+  const rest = (TUNING.GPULL || 0) - pullSecsNow();
   for (const key in GPS_CORR) {
     if (key in next) continue;
     const moved = slewToward(GPS_CORR[key], rest, DECAY_PER_SEC);
@@ -1368,7 +1398,10 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   // PULL: timetable-only trams are evaluated pullSecsNow() seconds ahead of
   // the real clock. Ringed trams (live GPS_CORR entry) are exempt — G/RT owns
   // them; when a ring ages out the tram lands here and inherits the pull.
+  // GPULL (W5 Slice E3, config v2, default 0): trams with a GPS_CORR entry
+  // (ringed, or fading out) are evaluated GPULL seconds ahead instead.
   if (GPS_CORR[tripKey(trip)] === undefined) currentSecs += pullSecsNow();
+  else currentSecs += (TUNING.GPULL || 0);
 
   // Effective (delay-adjusted) absolute times for each stop
   const absTimes = effectiveStopTimes(trip);
