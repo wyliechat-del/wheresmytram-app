@@ -384,6 +384,15 @@
     transition: background 0.15s;
   }
   .all-btn:hover { background: rgba(255,255,255,0.1); }
+  /* Sort by number / Sort by street: the one in use is outlined (W5 Slice D rev 2). */
+  .all-btn.active { border-color: var(--accent); color: var(--accent); }
+  /* Map style sits under the route list now. */
+  #map-style-section { border-top: 1px solid var(--border); border-bottom: none; }
+  /* Route card (a tap on a route-end square): name, then Hide route / Hide other routes / Close. */
+  #notice-card .nc-title { display: flex; align-items: center; justify-content: center; gap: 4px;
+    font-weight: 600; line-height: 1.3; margin-bottom: 14px; text-align: left; }
+  #notice-card .nc-btns { display: flex; flex-direction: column; gap: 8px; min-width: 220px; }
+  #notice-card .nc-btns .all-btn { flex: none; padding: 11px 14px; font-size: 13px; }
 
   /* ── Compass / orient-north button ── */
   #compass-btn { border-radius: 50%; }
@@ -504,7 +513,7 @@
         <button id="zoom-in" class="ctl-btn" title="Zoom in" aria-label="Zoom in" onclick="zoomBy(1)">+</button>
         <button id="zoom-out" class="ctl-btn" title="Zoom out" aria-label="Zoom out" onclick="zoomBy(-1)">−</button>
       </div>
-      <button id="locate-btn" class="ctl-btn" title="Show my location" onclick="locateMe()">◎</button>
+      <button id="locate-btn" class="ctl-btn" title="Show my location and the routes near me" onclick="nearbyStops()">◎</button>
     </div>
   </div>
 </div>
@@ -514,24 +523,28 @@
   <div id="drawer-head"><span>Routes and settings</span><button id="drawer-close" aria-label="Close" onclick="closeDrawer()">×</button></div>
   <div id="drawer-body">
     <div class="sidebar-section">
-      <div class="sidebar-section-label">Map Style</div>
-      <div style="display:flex;gap:6px;padding:0 14px 10px;">
-        <button id="btn-dark" class="map-type-btn active" onclick="setMapStyle('dark')">Dark</button>
-        <button id="btn-light" class="map-type-btn" onclick="setMapStyle('light')">Light</button>
-      </div>
-    </div>
-    <div class="sidebar-section">
       <div class="sidebar-section-label">Routes</div>
       <div id="route-session-note">Showing the routes near you. Changes here last for this visit only.</div>
       <div style="display:flex;gap:6px;padding:0 14px 8px;">
         <button class="all-btn" onclick="setAllRoutes(true)">All On</button>
         <button class="all-btn" onclick="setAllRoutes(false)">All Off</button>
       </div>
-      <div style="display:flex;padding:0 14px 10px;">
+      <div style="display:flex;padding:0 14px 8px;">
         <button class="all-btn" onclick="closeDrawer(); nearbyStops()">◎ Nearby routes</button>
+      </div>
+      <div style="display:flex;gap:6px;padding:0 14px 10px;">
+        <button id="sort-number" class="all-btn" onclick="setRouteSort('number')">Sort by number</button>
+        <button id="sort-street" class="all-btn" onclick="setRouteSort('street')">Sort by street</button>
       </div>
     </div>
     <div id="route-list"></div>
+    <div class="sidebar-section" id="map-style-section">
+      <div class="sidebar-section-label">Map Style</div>
+      <div style="display:flex;gap:6px;padding:0 14px 10px;">
+        <button id="btn-dark" class="map-type-btn active" onclick="setMapStyle('dark')">Dark</button>
+        <button id="btn-light" class="map-type-btn" onclick="setMapStyle('light')">Light</button>
+      </div>
+    </div>
     <div id="drawer-footer">
       Live data every 10 s · <span id="last-updated">—</span><br>
       <button id="drawer-about" type="button" onclick="openAbout()">About, legal and contact</button>
@@ -586,7 +599,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-d';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-d2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -1879,6 +1892,33 @@ function showNotice(msg) {
   ov.classList.add('visible');
 }
 
+// W5 Slice D rev 2: a tap on a route-end square. The route's name, then Hide route, Hide
+// other routes and Close. A tap anywhere else closes it too, like the other notices.
+// Route changes follow the usual rule: saved in network view, this visit only in
+// location mode.
+function showRouteCard(id) {
+  const def = ROUTE_DEFS[id];
+  if (!def) return;
+  const ov = document.getElementById('notice-overlay');
+  const card = document.getElementById('notice-card');
+  card.innerHTML =
+    '<div class="nc-title"><span class="info-route-badge" style="background:' + def.color + '">' + id + '</span>' +
+      '<span>' + escapeHtml(def.name) + '</span></div>' +
+    '<div class="nc-btns">' +
+      '<button class="all-btn" data-act="hide">Hide route</button>' +
+      '<button class="all-btn" data-act="others">Hide other routes</button>' +
+      '<button class="all-btn" data-act="close">Close</button>' +
+    '</div>';
+  card.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const act = b.getAttribute('data-act');
+    if (act === 'hide' && activeRoutes.has(id)) toggleRoute(id);
+    if (act === 'others') Object.keys(ROUTE_DEFS).forEach(r => { if ((r === id) !== activeRoutes.has(r)) toggleRoute(r); });
+    ov.classList.remove('visible');
+  }));
+  ov.classList.add('visible');
+}
+
 // "Nearby Stops": switch on only routes with a stop within NEARBY_RADIUS_M of
 // the user's location. No fix yet → run the geolocate flow first, then filter.
 // Nothing nearby → tell the user and restore all routes.
@@ -2627,7 +2667,7 @@ function buildRouteEnds() {
       const t = ev && ev.originalEvent && ev.originalEvent.target;
       const sq = t && t.closest ? t.closest('[data-route]') : null;
       const id = sq ? sq.getAttribute('data-route') : site.shown[0];
-      if (id && ROUTE_DEFS[id]) showNotice('Route ' + id + ' \u00b7 ' + ROUTE_DEFS[id].name);
+      if (id && ROUTE_DEFS[id]) showRouteCard(id);
     });
     return site;
   });
@@ -3392,18 +3432,34 @@ function orientStopTabs(geo) {
 }
 
 // ── Route list (in the cog drawer since W5 Slice B) ─────────────────────────
+// W5 Slice D rev 2: the list is in street order (the corridor headings, as before) or in
+// route-number order with no headings. The choice is remembered on this device.
+let ROUTE_SORT = (() => { try { return localStorage.getItem('wmt_route_sort') === 'number' ? 'number' : 'street'; } catch (e) { return 'street'; } })();
+function setRouteSort(mode) {
+  ROUTE_SORT = mode === 'number' ? 'number' : 'street';
+  try { localStorage.setItem('wmt_route_sort', ROUTE_SORT); } catch (e) {}
+  buildSidebar();
+  processVehicles();   // the per-route counts, rebuilt with the list
+  renderAlerts();      // and the alert marks on route names
+}
 function buildSidebar() {
   const list = document.getElementById('route-list');
   list.innerHTML = '';
+  document.getElementById('sort-number')?.classList.toggle('active', ROUTE_SORT === 'number');
+  document.getElementById('sort-street')?.classList.toggle('active', ROUTE_SORT === 'street');
+  const sections = ROUTE_SORT === 'number'
+    ? [[null, Object.entries(ROUTE_DEFS).sort((a, b) => Number(a[0]) - Number(b[0]))]]
+    : GROUPS.map(g => [g, Object.entries(ROUTE_DEFS).filter(([, d]) => d.group === g)]);
 
-  GROUPS.forEach(group => {
-    const routes = Object.entries(ROUTE_DEFS).filter(([,d]) => d.group === group);
+  sections.forEach(([group, routes]) => {
     if (!routes.length) return;
 
-    const header = document.createElement('div');
-    header.className = 'route-group-header';
-    header.textContent = group;
-    list.appendChild(header);
+    if (group) {
+      const header = document.createElement('div');
+      header.className = 'route-group-header';
+      header.textContent = group;
+      list.appendChild(header);
+    }
 
     routes.forEach(([id, def]) => {
       const item = document.createElement('div');
@@ -3766,6 +3822,8 @@ function initSheets() {
 // Escape closes the topmost thing: the drawer, then alerts, then the tram/stop panel.
 function onKeyDown(e) {
   if (e.key !== 'Escape') return;
+  const nov = document.getElementById('notice-overlay');
+  if (nov && nov.classList.contains('visible')) { nov.classList.remove('visible'); return; }
   const ap = document.getElementById('alerts-panel');
   const ab = document.getElementById('about-panel');
   if (document.getElementById('drawer').classList.contains('open')) closeDrawer();
