@@ -307,13 +307,14 @@
 
   /* ── W5 Slice C: City and Network tiers ──
      Every tram shrinks to an 8 px dot in its route colour, with no arrow and no
-     number; a GPS reading shows as a red outline. The 36 px tap area stays. The
-     circle is scaled about its own centre, and its outline widths are set so they
-     come out at 1.5 px (white) and 2 px (red) after scaling. */
+     number; a GPS reading shows as a red outline. The 41 px tap area stays. The
+     circle is scaled about its own centre (0.3162 of an icon drawn 15% large, so
+     still 8 px), and its outline widths are set so they come out at 1.5 px (white)
+     and 2 px (red) after scaling. */
   #map.trams-compact .tram-icon-outer svg g,
   #map.trams-compact .tram-icon-outer svg text { display: none; }
   #map.trams-compact .tram-icon-outer svg circle {
-    transform-box: fill-box; transform-origin: center; transform: scale(0.364); stroke-width: 4.1;
+    transform-box: fill-box; transform-origin: center; transform: scale(0.3162); stroke-width: 4.1;
   }
   #map.trams-compact .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 5.5; }
   #map.trams-compact .tram-icon-outer { filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
@@ -579,7 +580,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-c';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.10.24-c2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -1675,6 +1676,9 @@ function getActiveTrips(currentSecs) {
 }
 
 // ── Map init ─────────────────────────────────────────────────────────────────
+// Tram icon size on screen (24 Oct: 15% bigger than the original 36 px, so route numbers
+// read more easily). The drawing inside keeps its 36-unit layout and scales with it.
+const TRAM_PX = 41.4;
 function makeTramSVG(routeId, color, bearing, vehicleId) {
   // Circle with protruding arrow triangle pointing in direction of travel
   // SVG is 36x36, everything centred at 18,18
@@ -1688,7 +1692,7 @@ function makeTramSVG(routeId, color, bearing, vehicleId) {
   const pts = '0,' + tipY + ' -' + baseW + ',' + baseY + ' ' + baseW + ',' + baseY;
   const arrowVis = bearing ? '' : 'display:none;';
   return (
-    '<svg id="vm-' + vehicleId + '" width="36" height="36" viewBox="-18 -18 36 36"' +
+    '<svg id="vm-' + vehicleId + '" width="' + TRAM_PX + '" height="' + TRAM_PX + '" viewBox="-18 -18 36 36"' +
     ' xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible;">' +
     '<g transform="rotate(' + ((Number.isFinite(bearing) ? bearing : 0) - mapBearing) + ')" style="' + arrowVis + '">' +
     // Arrow triangle (pointing up = direction of travel)
@@ -2128,8 +2132,8 @@ function tickSchedule() {
       const icon = L.divIcon({
         className: 'tram-icon-outer',
         html: makeTramSVG(routeId, def.color, bearing, tramId),
-        iconSize: [36, 36],
-        iconAnchor: [18, 18],
+        iconSize: [TRAM_PX, TRAM_PX],
+        iconAnchor: [TRAM_PX / 2, TRAM_PX / 2],
       });
       const marker = L.marker([finalLat, finalLng], { icon, zIndexOffset: 100 });
       marker.on('click', () => { showScheduleInfo(tramId); });
@@ -2459,6 +2463,34 @@ function buildStopDots() {
 const END_MERGE_M = 300;
 const END_SITE_M = 150;
 const END_SQ_PX = 22, END_GAP_PX = 3;
+// Squares sit past the end of the line, on its own heading, this many px clear of the
+// end point: 30 when stops and full trams are drawn (a terminus tab reaches 8 px along
+// the track, a waiting tram's arrow 26.5 px), 6 when trams are 8 px dots and there
+// are no stops. Worked out in screen pixels after every move, so it holds at any zoom
+// and any map bearing.
+const END_CLEAR_PX = 30, END_CLEAR_COMPACT_PX = 6;
+const END_HEADING_M = 40;   // the line's heading is read over its last 40 m
+
+// Unit vector (east, north) pointing out of a shape's start or end, along the line.
+function endOutward(sh, atStart) {
+  const n = sh.length, end = atStart ? sh[0] : sh[n - 1];
+  let back = null;
+  for (let i = atStart ? 1 : n - 2; i >= 0 && i < n; i += atStart ? 1 : -1) {
+    back = sh[i];
+    if (metresBetween(end[0], end[1], back[0], back[1]) >= END_HEADING_M) break;
+  }
+  if (!back) return null;
+  const e = (end[1] - back[1]) * 111320 * Math.cos(end[0] * Math.PI / 180);
+  const no = (end[0] - back[0]) * 111320;
+  const len = Math.hypot(e, no);
+  return len ? [e / len, no / len] : null;
+}
+function unitSum(vs) {
+  let e = 0, no = 0;
+  vs.forEach(v => { if (v) { e += v[0]; no += v[1]; } });
+  const len = Math.hypot(e, no);
+  return len ? [e / len, no / len] : null;
+}
 const END_CBD = [-37.8136, 144.9631];   // declutter keeps the sites furthest from here
 let END_SITES = [];   // [{ lat, lng, routes, shown, key, marker, cbdM }]
 
@@ -2468,9 +2500,11 @@ function buildRouteEnds() {
   const ends = [];
   Object.entries(TRAM_NETWORK.routes).forEach(([id, dirs]) => {
     if (!ROUTE_DEFS[id] || !dirs) return;
-    const pts = [];
+    const pts = [];   // [lat, lng, outE, outN]
     Object.values(dirs).forEach(sh => {
-      if (Array.isArray(sh) && sh.length >= 2 && Array.isArray(sh[0])) pts.push(sh[0], sh[sh.length - 1]);
+      if (!(Array.isArray(sh) && sh.length >= 2 && Array.isArray(sh[0]))) return;
+      const a = endOutward(sh, true) || [0, 0], b = endOutward(sh, false) || [0, 0];
+      pts.push([sh[0][0], sh[0][1], a[0], a[1]], [sh[sh.length - 1][0], sh[sh.length - 1][1], b[0], b[1]]);
     });
     const groups = [];
     pts.forEach(p => {
@@ -2478,7 +2512,13 @@ function buildRouteEnds() {
       if (g) g.push(p); else groups.push([p]);
     });
     if (groups.length < 2) return;
-    groups.forEach(g => ends.push({ id: id, lat: avg(g, 0), lng: avg(g, 1) }));
+    groups.forEach(g => {
+      const out = unitSum(g.map(p => [p[2], p[3]])) || [0, 1];
+      // the end point furthest out along the heading, so the square clears every line end here
+      const along = p => p[1] * Math.cos(p[0] * Math.PI / 180) * out[0] + p[0] * out[1];
+      const tip = g.reduce((best, p) => along(p) > along(best) ? p : best, g[0]);
+      ends.push({ id: id, lat: avg(g, 0), lng: avg(g, 1), tlat: tip[0], tlng: tip[1], out: out });
+    });
   });
   const sites = [];
   ends.forEach(e => {
@@ -2490,7 +2530,14 @@ function buildRouteEnds() {
   END_SITES = sites.map(list => {
     const lat = avg(list.map(e => [e.lat]), 0), lng = avg(list.map(e => [e.lng]), 0);
     const routes = [...new Set(list.map(e => e.id))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    // Heading: the members' headings added up; if they cancel out (lines arriving from
+    // opposite sides), the first member's. Anchor: the member end furthest out along it.
+    const out = unitSum(list.map(e => e.out));
+    const head = (out && Math.hypot(out[0], out[1]) > 0.3) ? out : list[0].out;
+    const along = e => (e.tlng - lng) * Math.cos(lat * Math.PI / 180) * head[0] + (e.tlat - lat) * head[1];
+    const anchor = list.slice().sort((a, b) => along(b) - along(a))[0];
     const site = { lat: lat, lng: lng, routes: routes, shown: [], key: null,
+                   alat: anchor.tlat, alng: anchor.tlng, oe: head[0], on: head[1],
                    cbdM: metresBetween(lat, lng, END_CBD[0], END_CBD[1]),
                    marker: L.marker([lat, lng], { icon: endSiteIcon(routes), zIndexOffset: -10000 }) };
     site.marker.on('click', ev => {
@@ -2504,6 +2551,40 @@ function buildRouteEnds() {
   window.WMT_DEBUG.routeEnds = { routes: new Set(ends.map(e => e.id)).size, ends: ends.length,
                                  sites: END_SITES.length };
   updateRouteEnds();
+}
+// Stops drawn right now, in screen pixels: a dot is a 12 px circle; a tab is a 16 px
+// wide lozenge reaching 38 px from its stop point, in the direction its icon is turned
+// (west, turned by the tab's angle less the map bearing, as the CSS does).
+const END_TRY_DEG = [0, 30, -30, 60, -60, 90, -90];
+function endObstacles() {
+  const out = [];
+  const mb = (typeof map.getBearing === 'function' ? map.getBearing() : 0) || 0;
+  Object.values(stopMarkers).forEach(e => {
+    if (!map.hasLayer(e.marker)) return;
+    const icon = e.marker.options && e.marker.options.icon;
+    let k = STOP_TAB_ICONS.indexOf(icon);
+    if (k < 0) k = STOP_TAB_ICONS_ROGUE.indexOf(icon);
+    if (k < 0) k = 0;
+    const t = (k * 10 - mb) * Math.PI / 180, c = map.latLngToContainerPoint(e.marker.getLatLng());
+    out.push({ x: c.x, y: c.y, tab: true, ux: -Math.cos(t), uy: -Math.sin(t) });
+  });
+  STOP_DOTS.forEach(d => {
+    if (!map.hasLayer(d.marker)) return;
+    const c = map.latLngToContainerPoint(d.latlng);
+    out.push({ x: c.x, y: c.y, tab: false });
+  });
+  return out;
+}
+function endBoxHitsStops(b, obst) {
+  const dist = (x, y) => Math.hypot(Math.max(b.x0 - x, 0, x - b.x1), Math.max(b.y0 - y, 0, y - b.y1));
+  return obst.some(o => {
+    if (!o.tab) return dist(o.x, o.y) < 7;
+    for (let k = 0; k <= 4; k++) {          // along the lozenge's middle, 8 to 30 px out, radius 8
+      const a = 8 + 22 * k / 4;
+      if (dist(o.x + o.ux * a, o.y + o.uy * a) < 8) return true;
+    }
+    return false;
+  });
 }
 function endSiteHtml(routes) {
   return routes.map(r => '<span data-route="' + r + '"' + (r.length > 2 ? ' class="l3"' : '') +
@@ -2533,18 +2614,47 @@ function updateRouteEnds() {
   });
   live.sort((a, b) => b.cbdM - a.cbdM);
   const boxes = [];
-  let hidden = 0;
+  let hidden = 0, nudged = 0, blocked = 0;
+  const clear = (TIER >= 0 && ZOOM_TIERS[TIER].trams === 'compact') ? END_CLEAR_COMPACT_PX : END_CLEAR_PX;
+  const obst = endObstacles();
   live.forEach(s => {
-    const p = map.latLngToContainerPoint([s.lat, s.lng]);
-    const hw = (s.shown.length * END_SQ_PX + (s.shown.length - 1) * END_GAP_PX) / 2 + 2, hh = END_SQ_PX / 2 + 2;
-    const b = { x0: p.x - hw, x1: p.x + hw, y0: p.y - hh, y1: p.y + hh };
+    // Screen heading of the line at this end (follows zoom and map bearing): project
+    // the anchor and a point 200 m further out.
+    const p0 = map.latLngToContainerPoint([s.alat, s.alng]);
+    const p1 = map.latLngToContainerPoint([s.alat + s.on * 200 / 111320,
+                                           s.alng + s.oe * 200 / (111320 * Math.cos(s.alat * Math.PI / 180))]);
+    let ux = p1.x - p0.x, uy = p1.y - p0.y;
+    const n = Math.hypot(ux, uy) || 1; ux /= n; uy /= n;
+    const w = s.shown.length * END_SQ_PX + (s.shown.length - 1) * END_GAP_PX;
+    const hw = w / 2 + 2, hh = END_SQ_PX / 2 + 2;
+    const near = obst.filter(o => Math.abs(o.x - p0.x) < 220 && Math.abs(o.y - p0.y) < 220);
+    // Straight out along the line first; if a stop is in the way (another route's stop
+    // where this one ends on a junction), swing up to 90 degrees either side, then try
+    // a step further out. Nothing clear: straight out anyway.
+    let p = null, b = null;
+    search:
+    for (const extra of [0, 18]) {
+      for (const deg of END_TRY_DEG) {
+        const t = deg * Math.PI / 180, vx = ux * Math.cos(t) - uy * Math.sin(t), vy = ux * Math.sin(t) + uy * Math.cos(t);
+        const d = clear + extra + (w / 2) * Math.abs(vx) + (END_SQ_PX / 2) * Math.abs(vy);
+        const c = L.point(p0.x + vx * d, p0.y + vy * d);
+        const box = { x0: c.x - hw, x1: c.x + hw, y0: c.y - hh, y1: c.y + hh };
+        if (!p) { p = c; b = box; }                 // the straight-out spot, kept as the fallback
+        if (!endBoxHitsStops(box, near)) {
+          if (deg !== 0 || extra !== 0) nudged++;
+          p = c; b = box; break search;
+        }
+        if (deg === END_TRY_DEG[END_TRY_DEG.length - 1] && extra === 18) blocked++;
+      }
+    }
+    s.marker.setLatLng(map.containerPointToLatLng(p));
     if (boxes.some(o => b.x0 < o.x1 && o.x0 < b.x1 && b.y0 < o.y1 && o.y0 < b.y1)) { hidden++; return; }
     boxes.push(b);
     s.place = true;
   });
   END_SITES.forEach(s => showLayer(s.marker, s.place));
   const re = window.WMT_DEBUG.routeEnds || {};
-  re.shown = live.length - hidden; re.hidden = hidden;
+  re.shown = live.length - hidden; re.hidden = hidden; re.nudged = nudged; re.blocked = blocked;
   window.WMT_DEBUG.routeEnds = re;
 }
 
