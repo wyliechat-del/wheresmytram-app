@@ -277,6 +277,27 @@
   #locate-btn.locating { color: var(--accent); animation: pulse-btn 1s infinite; }
   #locate-btn.located { color: var(--accent); }
   @keyframes pulse-btn { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  /* First-use tip (P1, N2): a card beside the location button, its arrow pointing at the
+     button. placeGpsTip() sets left, top and --arrow-y. It hides (but isn't dismissed)
+     while a panel or the drawer is open. */
+  #gps-tip {
+    position: fixed; z-index: 1100; width: 250px; max-width: calc(100vw - 100px);
+    background: var(--surface); border: 1px solid var(--accent); border-radius: 12px;
+    padding: 12px 14px; font-size: 13px; line-height: 1.45; color: var(--text);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #gps-tip[hidden] { display: none; }
+  #gps-tip::before {
+    content: ''; position: absolute; left: -9px; top: var(--arrow-y, 50%); margin-top: -9px;
+    border-style: solid; border-width: 9px 9px 9px 0;
+    border-color: transparent var(--accent) transparent transparent;
+  }
+  #gps-tip p { margin: 0 0 10px; }
+  #gps-tip a { color: var(--accent); }
+  #gps-tip .all-btn { display: block; width: 100%; padding: 9px 0; font-size: 13px; }
+  body:has(#info-panel.visible) #gps-tip, body:has(#alerts-panel.visible) #gps-tip,
+  body:has(#about-panel.visible) #gps-tip, body:has(#feedback-panel.visible) #gps-tip,
+  body:has(#drawer.open) #gps-tip { visibility: hidden; }
   /* The map credit clears the home bar on notched phones. */
   .leaflet-bottom { bottom: env(safe-area-inset-bottom, 0px); }
 
@@ -297,9 +318,11 @@
     transition: filter 0.15s;
   }
   .tram-icon-outer:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
-  /* Red ring marks trams with a fresh, matched GPS reading (broadcasting) */
-  .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 3; }
-.tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
+  /* Red ring: a tram with a fresh, matched GPS reading (broadcasting). A developer aid,
+     so since build P1 (Drew, 9 Nov) it shows only in ?ptv field mode (body.ptv-field).
+     The gps-broadcasting class itself is still set for everyone: it is state. */
+  body.ptv-field .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 3; }
+  body.ptv-field .tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
   /* PTV ghost ring (field test): cyan = PTV shows this run with no vehicle assigned */
   .tram-icon-outer.ptv-ghost svg circle { stroke: #00e5ff; stroke-width: 3; }
   .tram-icon-outer.ptv-ghost { filter: drop-shadow(0 0 4px rgba(0,229,255,0.7)); }
@@ -307,7 +330,7 @@
 
   /* ── W5 Slice C: City tier (Network shows no trams since Slice D) ──
      Every tram shrinks to an 8 px dot in its route colour, with no arrow and no
-     number; a GPS reading shows as a red outline. The 41 px tap area stays. The
+     number; in ?ptv field mode a GPS reading shows as a red outline. The 41 px tap area stays. The
      circle is scaled about its own centre (0.3162 of an icon drawn 15% large, so
      still 8 px), and its outline widths are set so they come out at 1.5 px (white)
      and 2 px (red) after scaling. */
@@ -316,7 +339,7 @@
   #map.trams-compact .tram-icon-outer svg circle {
     transform-box: fill-box; transform-origin: center; transform: scale(0.3162); stroke-width: 4.1;
   }
-  #map.trams-compact .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 5.5; }
+  body.ptv-field #map.trams-compact .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 5.5; }
   /* Network tier (Drew, 24 Oct): no trams at all, just the route lines and their end squares. */
   #map.trams-hidden .tram-icon-outer { display: none; }
   /* Drawer, location mode: the route choices are for this visit only. */
@@ -599,7 +622,7 @@
         <button class="all-btn" onclick="setAllRoutes(false)">All Off</button>
       </div>
       <div style="display:flex;padding:0 14px 8px;">
-        <button class="all-btn" onclick="closeDrawer(); nearbyStops()">◎ Nearby routes</button>
+        <button class="all-btn" onclick="closeDrawer(); nearbyStops({ fromDrawer: true })">◎ Nearby routes</button>
       </div>
       <div style="display:flex;gap:6px;padding:0 14px 10px;">
         <button id="sort-number" class="all-btn" onclick="setRouteSort('number')">Sort by number</button>
@@ -621,8 +644,13 @@
   </div>
 </aside>
 
-<div id="notice-overlay" onclick="this.classList.remove('visible')">
+<div id="notice-overlay" onclick="if (!this.dataset.modal) this.classList.remove('visible')">
   <div id="notice-card"></div>
+</div>
+<!-- First-use tip (P1, N2): points at the location button until OK (or the button) is tapped. -->
+<div id="gps-tip" role="dialog" aria-label="Tip: your location" hidden>
+  <p>Tap GPS to zoom to your location. All use is anonymous and there are no tracking IDs. See <a href="#about-privacy" onclick="openPrivacy(event)">Privacy statement</a> for more information.</p>
+  <button type="button" class="all-btn" onclick="dismissGpsTip()">OK</button>
 </div>
 <div id="info-panel" onclick="closeInfo()">
   <button id="info-close" onclick="closeInfo()">×</button>
@@ -646,15 +674,15 @@
   <p>Where's My Tram is independent and not affiliated with or endorsed by Public Transport Victoria or the Victorian Government.</p>
   <h3>Accuracy</h3>
   <p>Tram positions and times are estimates and may be wrong. Check official sources for important journeys. Provided as is, without warranty.</p>
-  <h3>Privacy</h3>
+  <h3 id="about-privacy">Privacy</h3>
   <ul>
     <li>No accounts, no cookies, no tracking IDs.</li>
-    <li>Your location is used on your device only and is never sent.</li>
-    <li>Your map style and route choices are saved in this browser only.</li>
-    <li>We count anonymous taps (which stops and routes are viewed, by hour) to improve the app.</li>
+    <li>Your location stays on your device. To show arrival times, the app asks our server about stops near you, not your location.</li>
+    <li>Your settings (map style, routes, and whether you've seen tips) are saved in this browser only.</li>
+    <li>We count anonymous taps by the hour (such as which stops and routes are viewed, and how often live times are available) to improve the app.</li>
     <li>Page visits are counted with Cloudflare Web Analytics, which uses no cookies.</li>
     <li>Map tiles come from CARTO, fonts from Google Fonts and the map software from unpkg; like any website, they see your IP address.</li>
-    <li>Feedback is anonymous. It carries your message, a screenshot if you add one (shrunk, with its location data removed), the app version, browser type, screen size and map view, and the route or stop it's about. Never your location.</li>
+    <li>Feedback is anonymous. It carries your message, a screenshot if you add one (shrunk, with its location data removed), the app version, browser type, operating system, language, screen size and map view, and the route or stop it's about. Never your location.</li>
     <li>The feedback form uses Cloudflare Turnstile to check it's sent by a person. It loads only when you open the form.</li>
   </ul>
   <h3>Map</h3>
@@ -689,7 +717,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.10.24-w5';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.11.09-p1';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -1796,6 +1824,7 @@ function locateMe(onFix, opts) {
 // Show a transient centred notice; tapping anywhere dismisses it
 function showNotice(msg) {
   const ov = document.getElementById('notice-overlay');
+  delete ov.dataset.modal;
   document.getElementById('notice-card').textContent = msg;
   ov.classList.add('visible');
 }
@@ -1809,6 +1838,7 @@ function showRouteCard(id) {
   if (!def) return;
   const ov = document.getElementById('notice-overlay');
   const card = document.getElementById('notice-card');
+  delete ov.dataset.modal;
   card.innerHTML =
     '<div class="nc-title"><span class="info-route-badge" style="background:' + def.color + '">' + id + '</span>' +
       '<span>' + escapeHtml(def.name) + '</span></div>' +
@@ -1820,8 +1850,8 @@ function showRouteCard(id) {
   card.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', e => {
     e.stopPropagation();
     const act = b.getAttribute('data-act');
-    if (act === 'hide' && activeRoutes.has(id)) toggleRoute(id);
-    if (act === 'others') Object.keys(ROUTE_DEFS).forEach(r => { if ((r === id) !== activeRoutes.has(r)) toggleRoute(r); });
+    if (act === 'hide' && activeRoutes.has(id)) { toggleRoute(id); noteManualRoutes(); }
+    if (act === 'others') { Object.keys(ROUTE_DEFS).forEach(r => { if ((r === id) !== activeRoutes.has(r)) toggleRoute(r); }); noteManualRoutes(); }
     ov.classList.remove('visible');
   }));
   ov.classList.add('visible');
@@ -1833,10 +1863,135 @@ function showRouteCard(id) {
 
 // "Nearby routes" (drawer): find you, zoom to street level and switch on the routes
 // near you, by the same rule as the opening screen, for this visit only.
-function nearbyStops() {
+// P1 (N4, Drew 9 Nov): if the rider has picked routes by hand in the last hour and the
+// routes near them are different, the location button asks first: "Keep selected routes"
+// (zoom to you, routes untouched) or "Reset to closest routes". The drawer's "Nearby
+// routes" button is itself a request for the routes near you, so it never asks.
+function nearbyStops(opts) {
+  opts = opts || {};
+  dismissGpsTip();
   locateMe(() => {
-    NETWORK_READY.then(() => { if (!applyNearbyRoutes()) showNotice('Sorry, no trams are nearby'); });
+    NETWORK_READY.then(() => {
+      const near = userLoc && nearbyRouteSet(userLoc.lat, userLoc.lng);
+      if (!near) { showNotice('Sorry, no trams are nearby'); return; }
+      const m = opts.fromDrawer ? null : recentManualRoutes();
+      if (m && !sameRouteSet(activeRoutes, near.routes)) {
+        noteNear(near);
+        askRoutes('button', () => {}, () => { clearManualRoutes(); applyNearbyRoutes(near); });
+        return;
+      }
+      if (opts.fromDrawer) clearManualRoutes();
+      applyNearbyRoutes(near);
+    });
   });
+}
+
+// ── P1 (N4): routes picked by hand ───────────────────────────────────────────────
+// A change the rider makes in the route list (a switch, a route number, All On / All
+// Off) or on a route-end card is recorded, with the routes it left and the time, in
+// this browser only. For MANUAL_ROUTES_MS after the last one, the location button and
+// the opening screen ask before replacing those routes with the ones near you. Routes
+// switched on by location never count. The routes are kept too, so a reload inside
+// the hour can offer them back: changes made in location mode are otherwise for that
+// visit only. "Reset to closest routes" (or the drawer's Nearby routes) clears it.
+const MANUAL_ROUTES_KEY = 'wmt_routes_manual';
+const MANUAL_ROUTES_MS = 60 * 60 * 1000;
+const ROUTE_NOTE_NEAR = 'Showing the routes near you. Changes here last for this visit only.';
+const ROUTE_NOTE_KEPT = 'Showing the routes you picked. Changes here last for this visit only.';
+function noteManualRoutes() {
+  try { localStorage.setItem(MANUAL_ROUTES_KEY, JSON.stringify({ at: Date.now(), routes: [...activeRoutes], session: ROUTES_SESSION_ONLY })); } catch (e) {}
+}
+// The record, if it is under an hour old; null otherwise (or if unreadable).
+function recentManualRoutes() {
+  let m = null;
+  try { m = JSON.parse(localStorage.getItem(MANUAL_ROUTES_KEY) || 'null'); } catch (e) {}
+  const age = m ? Date.now() - Number(m.at) : NaN;
+  if (!m || !Array.isArray(m.routes) || !(age >= -60000 && age < MANUAL_ROUTES_MS)) return null;
+  return { at: Number(m.at), routes: new Set(m.routes.map(String).filter(id => ROUTE_DEFS[id])), session: !!m.session };
+}
+function clearManualRoutes() { try { localStorage.removeItem(MANUAL_ROUTES_KEY); } catch (e) {} }
+function sameRouteSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+function setRoutesTo(set) {
+  Object.keys(ROUTE_DEFS).forEach(id => { if (set.has(id) !== activeRoutes.has(id)) toggleRoute(id); });
+}
+function setRouteNote(text) {
+  const n = document.getElementById('route-session-note');
+  if (!n) return;
+  if (text) n.textContent = text;
+  n.classList.toggle('on', !!text);
+}
+function noteNear(near) {
+  window.WMT_DEBUG.near = { stop: near.nearest, metres: near.metres, routes: [...near.routes], second: near.second };
+}
+// The hand-picked routes back on, on the terms they were picked on: for this visit
+// only if picked in location mode, saved if picked in the network view.
+function keepManualRoutes(m) {
+  ROUTES_SESSION_ONLY = m.session;
+  setRouteNote(m.session ? ROUTE_NOTE_KEPT : null);
+  setRoutesTo(m.routes);
+}
+// The question. It needs an answer: a tap outside, or Escape, doesn't close it.
+function askRoutes(from, onKeep, onReset) {
+  const ov = document.getElementById('notice-overlay');
+  const card = document.getElementById('notice-card');
+  ov.dataset.modal = '1';
+  card.innerHTML = '<div class="nc-title"><span>Keep the routes you picked?</span></div>' +
+    '<div class="nc-btns">' +
+      '<button class="all-btn" data-act="keep">Keep selected routes</button>' +
+      '<button class="all-btn" data-act="reset">Reset to closest routes</button>' +
+    '</div>';
+  const ask = window.WMT_DEBUG.routesAsk = { from: from, at: Date.now(), choice: null };
+  card.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const act = b.getAttribute('data-act');
+    delete ov.dataset.modal;
+    ov.classList.remove('visible');
+    ask.choice = act;
+    (act === 'keep' ? onKeep : onReset)();
+  }));
+  ov.classList.add('visible');
+}
+
+// ── P1 (N2): the first-use tip ──────────────────────────────────────────────────
+// On the first visit in a browser, a card beside the location button points at it
+// until OK (or the button itself) is tapped; then never again in that browser.
+const GPS_TIP_KEY = 'wmt_tip_gps_seen';
+function showGpsTip() {
+  let seen = false;
+  try { seen = localStorage.getItem(GPS_TIP_KEY) === '1'; } catch (e) {}
+  const tip = document.getElementById('gps-tip');
+  if (seen || !tip) return;
+  tip.hidden = false;
+  placeGpsTip();
+  window.addEventListener('resize', placeGpsTip);
+  window.WMT_DEBUG.gpsTip = 'shown';
+}
+function placeGpsTip() {
+  const tip = document.getElementById('gps-tip'), btn = document.getElementById('locate-btn');
+  if (!tip || tip.hidden || !btn) return;
+  const r = btn.getBoundingClientRect(), h = tip.offsetHeight, cy = r.top + r.height / 2;
+  const top = Math.max(8, Math.min(Math.round(cy - h / 2), window.innerHeight - h - 8));
+  tip.style.left = Math.round(r.right + 14) + 'px';
+  tip.style.top = top + 'px';
+  tip.style.setProperty('--arrow-y', Math.max(16, Math.min(h - 16, Math.round(cy - top))) + 'px');
+}
+function dismissGpsTip() {
+  const tip = document.getElementById('gps-tip');
+  if (!tip || tip.hidden) return;
+  tip.hidden = true;
+  try { localStorage.setItem(GPS_TIP_KEY, '1'); } catch (e) {}
+  window.removeEventListener('resize', placeGpsTip);
+  window.WMT_DEBUG.gpsTip = 'dismissed';
+}
+// The tip's "Privacy statement" link: the About window, at its Privacy section.
+function openPrivacy(e) {
+  if (e) { e.preventDefault(); e.stopPropagation(); }
+  openAbout();
+  document.getElementById('about-privacy')?.scrollIntoView({ block: 'start' });
 }
 
 // ── W5 Slice D: the opening screen (design section 4) ─────────────────────────
@@ -1875,7 +2030,16 @@ async function chooseOpening() {
   open.mode = 'locating';
   locateMe(() => {
     NETWORK_READY.then(() => {
-      if (applyNearbyRoutes()) {
+      const near = userLoc && nearbyRouteSet(userLoc.lat, userLoc.lng);
+      if (near) {
+        // P1 (N4): routes picked by hand in the last hour aren't replaced without asking.
+        // The map opens on you either way; until the answer, the saved routes show.
+        const m = recentManualRoutes();
+        if (m && !sameRouteSet(m.routes, near.routes)) {
+          noteNear(near);
+          open.asked = true;
+          askRoutes('opening', () => keepManualRoutes(m), () => { clearManualRoutes(); applyNearbyRoutes(near); });
+        } else applyNearbyRoutes(near);
         open.mode = 'location';
         map.setView([userLoc.lat, userLoc.lng], 16, { animate: false });
         // W5 Slice E1 (brief 2.3): after first paint, ask PTV ahead for the two nearest
@@ -1913,15 +2077,16 @@ function nearbyRouteSet(lat, lng) {
   return { routes: set, nearest: list[0].sid, metres: Math.round(list[0].d), second: second ? second.sid : null };
 }
 // Switch the map to exactly the routes near you, for this visit only. False (and
-// nothing changed) when no stop is within 3 km.
-function applyNearbyRoutes() {
+// nothing changed) when no stop is within 3 km. near: an answer from nearbyRouteSet
+// already in hand (P1), else it is worked out here.
+function applyNearbyRoutes(near) {
   if (!userLoc) return false;
-  const near = nearbyRouteSet(userLoc.lat, userLoc.lng);
+  near = near || nearbyRouteSet(userLoc.lat, userLoc.lng);
   if (!near) return false;
   ROUTES_SESSION_ONLY = true;
-  document.getElementById('route-session-note')?.classList.add('on');
-  Object.keys(ROUTE_DEFS).forEach(id => { if (near.routes.has(id) !== activeRoutes.has(id)) toggleRoute(id); });
-  window.WMT_DEBUG.near = { stop: near.nearest, metres: near.metres, routes: [...near.routes], second: near.second };
+  setRouteNote(ROUTE_NOTE_NEAR);
+  setRoutesTo(near.routes);
+  noteNear(near);
   return true;
 }
 
@@ -3522,7 +3687,7 @@ function buildSidebar() {
       `;
       // Only the switch and the route-number square toggle the route; a tap anywhere
       // else in the drawer, the route name included, closes it (onDrawerTap).
-      const flip = e => { e.stopPropagation(); if (!activeRoutes.has(id)) wmtBeacon('route_toggle', id); toggleRoute(id); };
+      const flip = e => { e.stopPropagation(); if (!activeRoutes.has(id)) wmtBeacon('route_toggle', id); toggleRoute(id); noteManualRoutes(); };
       item.querySelector('.route-toggle').addEventListener('click', flip);
       item.querySelector('.route-num').addEventListener('click', flip);
       list.appendChild(item);
@@ -3530,11 +3695,12 @@ function buildSidebar() {
   });
 }
 
-function setAllRoutes(on) {
+function setAllRoutes(on) {   // the drawer's All On / All Off buttons only
   Object.keys(ROUTE_DEFS).forEach(id => {
     if (on !== activeRoutes.has(id)) toggleRoute(id);
   });
   saveRoutes();
+  noteManualRoutes();
 }
 
 function toggleRoute(id) {
@@ -4084,7 +4250,7 @@ function initSheets() {
 function onKeyDown(e) {
   if (e.key !== 'Escape') return;
   const nov = document.getElementById('notice-overlay');
-  if (nov && nov.classList.contains('visible')) { nov.classList.remove('visible'); return; }
+  if (nov && nov.classList.contains('visible')) { if (!nov.dataset.modal) nov.classList.remove('visible'); return; }
   const ap = document.getElementById('alerts-panel');
   const ab = document.getElementById('about-panel');
   if (document.getElementById('drawer').classList.contains('open')) closeDrawer();
@@ -4440,7 +4606,7 @@ function toggleAlertsPanel() {
   if (!p) return;
   if (p.classList.contains('visible')) { p.classList.remove('visible'); return; }
   let html = '<button class="info-close-x" onclick="event.stopPropagation();toggleAlertsPanel()">×</button>' +
-    '<div style="font-weight:600;font-size:14px;margin-bottom:10px;">Service Alerts</div>';
+    '<div style="font-weight:600;font-size:14px;margin-bottom:10px;">PTV Alert Feed</div>';   // P1 (N1): the messages are PTV's, word for word
   if (!serviceAlerts.length) {
     html += '<div style="font-size:12px;color:var(--muted)">No current disruptions.</div>';
   } else {
@@ -4473,9 +4639,11 @@ function checkScheduleDay() {
 window.addEventListener('DOMContentLoaded', () => {
   loadConfig().then(() => console.log('[WMT] config:', window.WMT_DEBUG.config));   // fire-and-forget; baked defaults until/if it resolves
   initMap();
+  if (PTV_FIELD) document.body.classList.add('ptv-field');   // P1 (N3): the developer rings show in ?ptv mode only
   chooseOpening();   // W5 Slice D: location mode or the network view (async; never prompts on a first visit)
   buildSidebar();
   initSheets();
+  showGpsTip();      // P1 (N2): first use in this browser only
   document.addEventListener('keydown', onKeyDown);
   const av = document.getElementById('app-version');
   if (av) av.textContent = 'Version ' + APP_VERSION;
