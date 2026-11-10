@@ -328,7 +328,8 @@
   .tram-icon-outer.ptv-ghost { filter: drop-shadow(0 0 4px rgba(0,229,255,0.7)); }
   .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
-  /* ── W5 Slice C: City tier (Network shows no trams since Slice D) ──
+  /* ── W5 Slice C: compact trams. Unused since build P2 (Drew, 10 Nov): the City tier,
+     like Network, now draws no trams. Kept so a tier can be set back to 'compact'. ──
      Every tram shrinks to an 8 px dot in its route colour, with no arrow and no
      number; in ?ptv field mode a GPS reading shows as a red outline. The 41 px tap area stays. The
      circle is scaled about its own centre (0.3162 of an icon drawn 15% large, so
@@ -340,7 +341,7 @@
     transform-box: fill-box; transform-origin: center; transform: scale(0.3162); stroke-width: 4.1;
   }
   body.ptv-field #map.trams-compact .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 5.5; }
-  /* Network tier (Drew, 24 Oct): no trams at all, just the route lines and their end squares. */
+  /* City and Network tiers (Drew, 24 Oct and 10 Nov): no trams at all, just the route lines and their end squares. */
   #map.trams-hidden .tram-icon-outer { display: none; }
   /* Drawer, location mode: the route choices are for this visit only. */
   #route-session-note { display: none; padding: 0 14px 8px; font-size: 11px; line-height: 1.4; color: var(--muted); }
@@ -717,7 +718,7 @@
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // W5 Slice A: feed fetch rules and the live-data status pill.
-const APP_VERSION = '2026.11.09-p1';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
+const APP_VERSION = '2026.11.10-p2';  // shown in WMT_DEBUG.app; feedback will carry it (W5)
 const FEED_POLL_MS = 10000;      // fetch the feed every 10 s while the page is visible
 const FEED_TIMEOUT_MS = 15000;   // give up on one fetch after 15 s (the feed Worker
                                  // can wait ~10 s on a slow upstream before answering)
@@ -2720,7 +2721,7 @@ function showLayer(layer, want) {
 const ZOOM_TIERS = [
   { name: 'street',        min: 16,        stops: 'tabs', trams: 'full'    },
   { name: 'neighbourhood', min: 14,        stops: 'dots', trams: 'full'    },
-  { name: 'city',          min: 12,        stops: 'none', trams: 'compact' },
+  { name: 'city',          min: 12,        stops: 'none', trams: 'none'    },   // Drew, 10 Nov (P2): routes only (was 'compact')
   { name: 'network',       min: -Infinity, stops: 'none', trams: 'none'    },   // Drew, 24 Oct
 ];
 const TIER_HYST = 0.25;
